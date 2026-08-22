@@ -4,6 +4,8 @@
 
 它不是 Canvas 表格，也不试图处理百万行前端数据。它以服务端分页为默认路径，重点解决后台列表中反复出现的字段、查询、权限、选择、动作、编辑、视图与数据源接入问题。
 
+在线演示：[huiyun-data-grid-demo.vercel.app](https://huiyun-data-grid-demo.vercel.app)
+
 ## 特性
 
 - 语义字段 `GridField` 与展示列 `GridColumn` 分离，支持嵌套字段、计算字段、分组表头和纯展示列。

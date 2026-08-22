@@ -1,0 +1,139 @@
+{
+  "name": "@huiyun/data-grid",
+  "version": "0.1.0",
+  "description": "A protocol-driven data grid with a headless core and an Ant Design 6 renderer for React admin applications.",
+  "keywords": [
+    "react",
+    "antd",
+    "admin",
+    "data-grid",
+    "table",
+    "headless",
+    "protocol-driven",
+    "typescript"
+  ],
+  "homepage": "https://github.com/stevenleep/data-grid#readme",
+  "bugs": {
+    "url": "https://github.com/stevenleep/data-grid/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stevenleep/data-grid.git"
+  },
+  "author": {
+    "name": "ivan",
+    "email": "ivan@voidjs.dev",
+    "url": "https://github.com/stevenleep"
+  },
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.13.1",
+  "files": [
+    "dist",
+    "docs",
+    "style.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./core": {
+      "import": {
+        "types": "./dist/core.d.mts",
+        "default": "./dist/core.mjs"
+      },
+      "require": {
+        "types": "./dist/core.d.cts",
+        "default": "./dist/core.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.mts",
+        "default": "./dist/react.mjs"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
+    "./antd": {
+      "import": {
+        "types": "./dist/antd.d.mts",
+        "default": "./dist/antd.mjs"
+      },
+      "require": {
+        "types": "./dist/antd.d.cts",
+        "default": "./dist/antd.cjs"
+      }
+    },
+    "./style.css": {
+      "types": "./style.d.ts",
+      "default": "./dist/style.css"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "demo": "pnpm --filter @huiyun/data-grid-demo dev",
+    "demo:build": "pnpm --filter @huiyun/data-grid-demo build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write . --ignore-unknown",
+    "format:check": "prettier --check . --ignore-unknown",
+    "check": "pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm demo:build",
+    "prepublishOnly": "pnpm check",
+    "pack:check": "pnpm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@ant-design/icons": ">=6.0.0",
+    "antd": ">=6.0.0 <7",
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.18"
+  },
+  "devDependencies": {
+    "@ant-design/icons": "^6.3.2",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@tsdown/css": "^0.22.14",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "antd": "^6.6.1",
+    "jsdom": "^27.2.0",
+    "prettier": "^3.9.6",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

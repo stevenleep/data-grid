@@ -96,6 +96,8 @@ readonly 视图不可保存或删除；对当前视图修改 query/columns 后 `
 
 不同用户、租户或页面环境应使用不同 scope。
 
+本地 adapter 会拒绝损坏或结构不完整的 JSON，也会安全处理浏览器禁止访问 storage 的情况。它仍然是明文 `localStorage`：命名视图会保存筛选值和 query context，因此不要把密钥、身份证号、访问令牌或其他敏感数据放进可持久化查询。涉及敏感字段、共享视图、审计、权限或多端同步时，应使用服务端 adapter，并在服务端执行字段级过滤、授权和版本控制。
+
 ## 服务端持久化
 
 ```ts
@@ -108,3 +110,5 @@ const persistence: GridPersistence<Order> = {
 ```
 
 持久化协议包含 grid id、revision、列状态、命名视图、active view 和更新时间。revision 不匹配时，只有提供 `migrate` 才会恢复。
+
+`shared` / `system` 是视图协议中的 scope，不代表客户端自动获得协作能力。服务端实现仍需定义创建、更新、删除权限，使用版本号或 ETag 处理并发冲突，并对只读视图强制授权；不要只依赖前端按钮隐藏。

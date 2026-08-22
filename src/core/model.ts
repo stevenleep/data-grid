@@ -4,6 +4,8 @@ import type {
   GridEventReason,
   GridFilterCondition,
   GridFilterGroup,
+  GridFilterOperatorValueKinds,
+  GridFilterValueKind,
   GridJsonValue,
   GridPath,
   GridQuery,
@@ -71,6 +73,30 @@ const operatorsWithoutValue = new Set([
   'last30Days',
 ]);
 
+const operatorsWithRangeValue = new Set(['between', 'notBetween']);
+const operatorsWithListValue = new Set([
+  'in',
+  'notIn',
+  'containsAny',
+  'containsAll',
+  'containsNone',
+]);
+
+/** @deprecated Use GridFilterValueKind. */
+export type GridFilterOperatorValueKind = GridFilterValueKind;
+
+export function getFilterOperatorValueKind(
+  operator: GridFilterCondition['operator'],
+  overrides?: GridFilterOperatorValueKinds,
+): GridFilterValueKind {
+  const configured = overrides?.[operator];
+  if (configured) return configured;
+  if (operatorsWithoutValue.has(operator)) return 'none';
+  if (operatorsWithRangeValue.has(operator)) return 'range';
+  if (operatorsWithListValue.has(operator)) return 'multiple';
+  return 'single';
+}
+
 export function isEmptyValue(value: unknown): boolean {
   return (
     value === undefined ||
@@ -80,18 +106,50 @@ export function isEmptyValue(value: unknown): boolean {
   );
 }
 
-export function filterConditionIsComplete(condition: GridFilterCondition): boolean {
-  if (operatorsWithoutValue.has(condition.operator)) return true;
-  if (Array.isArray(condition.value)) {
-    return condition.value.length > 0 && condition.value.every((value) => !isEmptyValue(value));
+export function filterConditionIsComplete(
+  condition: GridFilterCondition,
+  kind: GridFilterValueKind = getFilterOperatorValueKind(condition.operator),
+): boolean {
+  if (kind === 'none') return true;
+  if (kind === 'range') {
+    return (
+      Array.isArray(condition.value) &&
+      condition.value.length === 2 &&
+      condition.value.every((value) => !isEmptyValue(value))
+    );
+  }
+  if (kind === 'multiple') {
+    return (
+      Array.isArray(condition.value) &&
+      condition.value.length > 0 &&
+      condition.value.every((value) => !isEmptyValue(value))
+    );
   }
   return !isEmptyValue(condition.value);
 }
 
-export function pruneFilterGroup(group: GridFilterGroup): GridFilterGroup {
+export type GridFilterValueKindResolver = (condition: GridFilterCondition) => GridFilterValueKind;
+
+export function pruneFilterGroup(
+  group: GridFilterGroup,
+  resolveValueKind?: GridFilterValueKindResolver,
+): GridFilterGroup {
   const children = group.children.flatMap<GridFilterGroup['children'][number]>((node) => {
-    if (node.type === 'condition') return filterConditionIsComplete(node) ? [node] : [];
-    const nested = pruneFilterGroup(node);
+    if (node.type === 'condition') {
+      const kind = resolveValueKind?.(node);
+      return filterConditionIsComplete(node, kind) ? [node] : [];
+    }
+    const nested = pruneFilterGroup(node, resolveValueKind);
+    return nested.children.length ? [nested] : [];
+  });
+  return { ...group, children };
+}
+
+/** Removes structurally empty nested groups without discarding incomplete editor drafts. */
+export function pruneEmptyFilterGroups(group: GridFilterGroup): GridFilterGroup {
+  const children = group.children.flatMap<GridFilterGroup['children'][number]>((node) => {
+    if (node.type === 'condition') return [node];
+    const nested = pruneEmptyFilterGroups(node);
     return nested.children.length ? [nested] : [];
   });
   return { ...group, children };
@@ -127,12 +185,12 @@ export function updateFilterNode(
 }
 
 export function removeFilterNode(group: GridFilterGroup, nodeId: string): GridFilterGroup {
-  return {
+  return pruneEmptyFilterGroups({
     ...group,
     children: group.children
       .filter((node) => node.id !== nodeId)
       .map((node) => (node.type === 'group' ? removeFilterNode(node, nodeId) : node)),
-  };
+  });
 }
 
 export function addFilterNode(

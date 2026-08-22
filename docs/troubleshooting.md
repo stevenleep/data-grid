@@ -57,6 +57,10 @@
 import '@huiyun/data-grid/style.css';
 ```
 
+## 子路径类型无法解析
+
+`@huiyun/data-grid/core`、`/react` 和 `/antd` 使用现代 `exports`。TypeScript 应配置 `moduleResolution: "Bundler"`、`"Node16"` 或 `"NodeNext"`；旧的 `"node"` 不在支持范围内。不要只添加路径别名掩盖运行时同样无法解析的问题。
+
 ## AntD 上下文告警
 
 `DataGrid` 内部已经提供无额外 DOM 的 AntD App 上下文。业务仍可在应用根部使用自己的 `ConfigProvider` 与 `App`，主题和 locale 会正常继承。
@@ -64,9 +68,7 @@ import '@huiyun/data-grid/style.css';
 ## 发布前检查
 
 ```bash
-pnpm check
-pnpm pack:check
-pnpm dlx publint
+pnpm release:check
 ```
 
-检查范围包括格式、类型、测试、ESM/CJS/声明构建、Demo 构建、导出映射和 npm tarball 内容。
+检查范围包括格式、类型、测试与覆盖率、ESM/CJS/声明构建、Demo 构建、导出映射、npm tarball 内容和真实消费项目。完整流程见[维护与发布](./releasing.md)。

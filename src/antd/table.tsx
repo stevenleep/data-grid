@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons';
 import { Table, Tooltip, type TableColumnsType, type TableProps } from 'antd';
 import type { ColumnType, SorterResult } from 'antd/es/table/interface';
-import { useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   countFilterConditions,
   createGridId,
@@ -24,6 +24,7 @@ import { GridActions } from './actions';
 import { GridCell, GridEditableCell } from './cells';
 import { useGridUi } from './context';
 import { resolveGridLocale } from './locale';
+import { gridNodeText, renderGridNode } from './render';
 import type {
   GridCellClickContext,
   GridCellInteractionContext,
@@ -31,6 +32,7 @@ import type {
   GridRowInteractionContext,
   GridRowActionsConfig,
   GridTablePlatformProps,
+  GridTableSelectionProps,
 } from './types';
 
 function fieldIcon(valueType: string) {
@@ -83,7 +85,7 @@ function orderedColumns<Row extends object>(
 
 export interface GridTableProps<Row extends object> {
   columns?: GridResolvedColumn<Row>[];
-  selection?: boolean | NonNullable<TableProps<Row>['rowSelection']>;
+  selection?: boolean | GridTableSelectionProps<Row>;
   rowActions?: false | GridRowActionsConfig;
   loading?: 'initial' | 'always' | 'never';
   className?: string;
@@ -99,14 +101,16 @@ function classes(...values: Array<string | undefined | false>): string | undefin
   return value || undefined;
 }
 
-function isInteractiveTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof Element &&
-    Boolean(
-      target.closest(
-        'a, button, input, select, textarea, [role="button"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]',
-      ),
-    )
+function isInteractiveDescendant(
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean {
+  if (!(target instanceof Element) || !(currentTarget instanceof Element)) return false;
+  const interactive = target.closest(
+    'a, button, input, select, textarea, [role="button"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]',
+  );
+  return Boolean(
+    interactive && interactive !== currentTarget && currentTarget.contains(interactive),
   );
 }
 
@@ -139,6 +143,7 @@ export function GridTable<Row extends object>({
   const keyword = useGridSelector<Row, string>((state) => state.query.keyword);
   const wrapRef = useRef<HTMLDivElement>(null);
   const guideRef = useRef<HTMLDivElement>(null);
+  const resizeCleanupRef = useRef<() => void>(() => undefined);
   const tableProps = { ...ui.tableProps, ...localTableProps } as TableProps<Row>;
   const onRowClick = localOnRowClick || ui.onRowClick;
   const onCellClick = localOnCellClick || ui.onCellClick;
@@ -151,11 +156,16 @@ export function GridTable<Row extends object>({
     instance.definition.actions?.some((action) => (action.placement || 'toolbar') === 'row'),
   );
 
+  useEffect(() => () => resizeCleanupRef.current(), []);
+
   const startResize = (
     event: React.PointerEvent,
     column: GridResolvedColumn<Row>,
     width: number,
   ) => {
+    if (!instance.definition.columnMap.has(column.id)) return;
+    if (event.button !== 0) return;
+    resizeCleanupRef.current();
     event.preventDefault();
     event.stopPropagation();
     const startX = event.clientX;
@@ -169,14 +179,21 @@ export function GridTable<Row extends object>({
     const onMove = (moveEvent: PointerEvent) => {
       if (guideRef.current) guideRef.current.style.left = `${moveEvent.clientX - wrapLeft}px`;
     };
-    const finish = (upEvent: PointerEvent) => {
+    const cleanup = () => {
       document.body.style.cursor = bodyCursor;
       if (guideRef.current) guideRef.current.hidden = true;
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', finish);
       window.removeEventListener('pointercancel', finish);
-      instance.columns.setWidth(column.id, width + upEvent.clientX - startX);
+      resizeCleanupRef.current = () => undefined;
     };
+    const finish = (upEvent: PointerEvent) => {
+      cleanup();
+      if (upEvent.type === 'pointerup') {
+        instance.columns.setWidth(column.id, width + upEvent.clientX - startX);
+      }
+    };
+    resizeCleanupRef.current = cleanup;
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish);
@@ -189,16 +206,18 @@ export function GridTable<Row extends object>({
         return {
           key: column.id,
           title: column.header
-            ? (column.header(column, instance) as ReactNode)
-            : (column.title as ReactNode),
+            ? renderGridNode(column.header(column, instance))
+            : renderGridNode(column.title),
           children: column.children.map(build),
         };
       }
       const field = column.fieldId ? instance.definition.fieldMap.get(column.fieldId) : undefined;
-      const width = columnState.widths[column.id] || column.width || 160;
-      const pinned = Object.prototype.hasOwnProperty.call(columnState.pinned, column.id)
-        ? columnState.pinned[column.id] || undefined
-        : column.fixed;
+      const managed = instance.definition.columnMap.has(column.id);
+      const width = (managed ? columnState.widths[column.id] : undefined) || column.width || 160;
+      const pinned =
+        managed && Object.prototype.hasOwnProperty.call(columnState.pinned, column.id)
+          ? columnState.pinned[column.id] || undefined
+          : column.fixed;
       const activeSort = field ? sorts.find((sort) => sort.fieldId === field.id) : undefined;
       const platform = (column.platform || {}) as ColumnType<Row>;
       return {
@@ -209,24 +228,33 @@ export function GridTable<Row extends object>({
         align: column.align,
         ellipsis: column.ellipsis ?? !column.wrap,
         title: column.header ? (
-          (column.header(column, instance) as ReactNode)
+          renderGridNode(column.header(column, instance))
         ) : (
           <div className="hui-grid__column-title">
-            {field && <span className="hui-grid__column-icon">{fieldIcon(field.valueType)}</span>}
-            <Tooltip title={column.description as ReactNode}>
-              <span className="hui-grid__column-label">{column.title as ReactNode}</span>
+            {field && (
+              <span className="hui-grid__column-icon" aria-hidden>
+                {fieldIcon(field.valueType)}
+              </span>
+            )}
+            <Tooltip title={renderGridNode(column.description)}>
+              <span className="hui-grid__column-label">{renderGridNode(column.title)}</span>
             </Tooltip>
-            {column.resizable !== false && (
+            {managed && column.resizable !== false && (
               <span
                 className="hui-grid__resize-handle"
                 role="separator"
                 tabIndex={0}
                 aria-orientation="vertical"
-                aria-label={locale.resizeColumn(String(column.title))}
+                aria-label={locale.resizeColumn(gridNodeText(column.title) || column.id)}
                 onPointerDown={(event) => startResize(event, column, width)}
                 onKeyDown={(event) => {
-                  if (event.key === 'ArrowLeft') instance.columns.setWidth(column.id, width - 10);
-                  if (event.key === 'ArrowRight') instance.columns.setWidth(column.id, width + 10);
+                  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    instance.columns.setWidth(
+                      column.id,
+                      width + (event.key === 'ArrowLeft' ? -10 : 10),
+                    );
+                  }
                 }}
               />
             )}
@@ -246,7 +274,7 @@ export function GridTable<Row extends object>({
         render: (_value: unknown, row: Row, rowIndex: number) => {
           const value = field?.getValue(row);
           const content = column.render ? (
-            (column.render({ value, row, rowIndex, column, field, instance }) as ReactNode)
+            renderGridNode(column.render({ value, row, rowIndex, column, field, instance }))
           ) : field ? (
             <GridCell row={row} rowIndex={rowIndex} field={field} />
           ) : null;
@@ -271,12 +299,37 @@ export function GridTable<Row extends object>({
           const clickable = Boolean(
             onCellClick && (isCellClickable ? isCellClickable(context) : true),
           );
+          const accessibleLabel = field
+            ? `${gridNodeText(field.title)}: ${gridNodeText(context.value)}`
+            : gridNodeText(column.title);
           return {
             ...suppliedCell,
             className: classes(suppliedCell.className, clickable && 'hui-grid__cell--clickable'),
+            tabIndex: suppliedCell.tabIndex ?? (clickable ? 0 : undefined),
+            'aria-label':
+              suppliedCell['aria-label'] ??
+              (clickable && accessibleLabel ? accessibleLabel : undefined),
             onClick: (event) => {
               suppliedCell.onClick?.(event);
-              if (!event.defaultPrevented && clickable) onCellClick?.({ ...context, event });
+              if (
+                !event.defaultPrevented &&
+                clickable &&
+                !isInteractiveDescendant(event.target, event.currentTarget)
+              ) {
+                onCellClick?.({ ...context, event });
+              }
+            },
+            onKeyDown: (event) => {
+              suppliedCell.onKeyDown?.(event);
+              if (
+                !event.defaultPrevented &&
+                clickable &&
+                (event.key === 'Enter' || event.key === ' ') &&
+                !isInteractiveDescendant(event.target, event.currentTarget)
+              ) {
+                event.preventDefault();
+                event.currentTarget.click();
+              }
             },
           };
         },
@@ -321,10 +374,14 @@ export function GridTable<Row extends object>({
   ]);
 
   const uiSelection = selectionOverride ?? ui.selection ?? instance.definition.defaults?.selection;
+  const suppliedSelection =
+    typeof uiSelection === 'object'
+      ? (uiSelection as NonNullable<TableProps<Row>['rowSelection']>)
+      : undefined;
   const selectionConfig: TableProps<Row>['rowSelection'] = uiSelection
     ? {
-        ...(typeof uiSelection === 'object' ? uiSelection : {}),
-        fixed: typeof uiSelection === 'object' ? (uiSelection.fixed ?? true) : true,
+        ...(suppliedSelection || {}),
+        fixed: suppliedSelection?.fixed ?? true,
         preserveSelectedRowKeys: true,
         selectedRowKeys:
           selection.mode === 'explicit'
@@ -332,17 +389,31 @@ export function GridTable<Row extends object>({
             : data.rows
                 .map(instance.definition.getRowKey)
                 .filter((key) => !selection.excludedKeys.includes(key)),
-        onSelect: (row, selected) =>
-          instance.selection.toggle(instance.definition.getRowKey(row), row, selected),
-        onSelectAll: (selected, _selectedRows, changeRows) => {
-          changeRows.forEach((row) =>
-            instance.selection.toggle(instance.definition.getRowKey(row), row, selected),
+        onSelect: (row, selected, selectedRows, nativeEvent) => {
+          suppliedSelection?.onSelect?.(row, selected, selectedRows, nativeEvent);
+        },
+        onSelectAll: (selected, selectedRows, changeRows) => {
+          suppliedSelection?.onSelectAll?.(selected, selectedRows, changeRows);
+        },
+        onSelectMultiple: (selected, selectedRows, changeRows) => {
+          suppliedSelection?.onSelectMultiple?.(selected, selectedRows, changeRows);
+        },
+        onChange: (selectedRowKeys, selectedRows, info) => {
+          const validKeys = selectedRowKeys.filter(
+            (key): key is string | number => typeof key === 'string' || typeof key === 'number',
           );
+          const knownRows = selectedRows.filter((row): row is Row => Boolean(row));
+          instance.selection.set(validKeys, knownRows);
+          suppliedSelection?.onChange?.(selectedRowKeys, selectedRows, info);
         },
       }
     : undefined;
   const naturalWidth = leafColumns(orderedColumns(definitionColumns, columnState)).reduce(
-    (total, column) => total + (columnState.widths[column.id] || column.width || 160),
+    (total, column) =>
+      total +
+      ((instance.definition.columnMap.has(column.id) ? columnState.widths[column.id] : undefined) ||
+        column.width ||
+        160),
     (uiSelection ? 40 : 0) + (hasRowActions && rowActionConfig ? rowActionConfig.width || 132 : 0),
   );
   const size =
@@ -362,18 +433,26 @@ export function GridTable<Row extends object>({
     const values = (Array.isArray(sorter) ? sorter : [sorter]) as SorterResult<Row>[];
     const nextSorts = values
       .filter((item) => item.order && typeof item.columnKey === 'string')
-      .slice(0, instance.capabilities.sort.max)
-      .map((item) => {
+      .flatMap((item) => {
         const column = instance.definition.columnMap.get(String(item.columnKey));
-        const fieldId = column?.fieldId || String(item.columnKey);
+        const field = column?.fieldId
+          ? instance.definition.fieldMap.get(column.fieldId)
+          : undefined;
+        if (!field?.sort) return [];
+        const fieldId = field.id;
         const previous = sorts.find((sort) => sort.fieldId === fieldId);
-        return {
-          id: previous?.id || createGridId('sort'),
-          fieldId,
-          direction: item.order === 'ascend' ? ('asc' as const) : ('desc' as const),
-          ...(previous?.nulls ? { nulls: previous.nulls } : {}),
-        };
-      });
+        return [
+          {
+            id: previous?.id || createGridId('sort'),
+            fieldId,
+            direction: item.order === 'ascend' ? ('asc' as const) : ('desc' as const),
+            ...(instance.capabilities.sort.nulls && field.sort.nulls !== false && previous?.nulls
+              ? { nulls: previous.nulls }
+              : {}),
+          },
+        ];
+      })
+      .slice(0, instance.capabilities.sort.max);
     if (stableSorts(nextSorts) !== stableSorts(sorts)) instance.query.setSorts(nextSorts, 'user');
   };
   const onRow: TableProps<Row>['onRow'] = (row, rowIndex = 0) => {
@@ -383,10 +462,27 @@ export function GridTable<Row extends object>({
     return {
       ...suppliedRow,
       className: classes(suppliedRow.className, clickable && 'hui-grid__row--clickable'),
+      tabIndex: suppliedRow.tabIndex ?? (clickable ? 0 : undefined),
       onClick: (event) => {
         suppliedRow.onClick?.(event);
-        if (!event.defaultPrevented && clickable && !isInteractiveTarget(event.target)) {
+        if (
+          !event.defaultPrevented &&
+          clickable &&
+          !isInteractiveDescendant(event.target, event.currentTarget)
+        ) {
           onRowClick?.({ ...context, event });
+        }
+      },
+      onKeyDown: (event) => {
+        suppliedRow.onKeyDown?.(event);
+        if (
+          !event.defaultPrevented &&
+          clickable &&
+          (event.key === 'Enter' || event.key === ' ') &&
+          event.target === event.currentTarget
+        ) {
+          event.preventDefault();
+          event.currentTarget.click();
         }
       },
     };

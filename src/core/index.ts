@@ -22,6 +22,7 @@ export {
   createGridEvent,
   createGridId,
   filterConditionIsComplete,
+  getFilterOperatorValueKind,
   getFilterDepth,
   getPathValue,
   getRequestScopeSignature,
@@ -30,11 +31,13 @@ export {
   moveFilterNode,
   normalizeError,
   pruneFilterGroup,
+  pruneEmptyFilterGroups,
   queryWithoutPagination,
   removeFilterNode,
   stableStringify,
   updateFilterNode,
 } from './model';
+export type { GridFilterOperatorValueKind, GridFilterValueKindResolver } from './model';
 
 export {
   applyLocalGridQuery,

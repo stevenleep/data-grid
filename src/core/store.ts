@@ -57,6 +57,7 @@ interface OptionCacheEntry {
   value?: GridOption[];
   promise?: Promise<GridOption[]>;
   controller?: AbortController;
+  consumers?: number;
   createdAt: number;
 }
 
@@ -240,6 +241,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       actions: { pending: {}, errors: {} },
     };
     this.state = mergeControlledState(this.internalState, options.state);
+    if (this.capabilities.projection) this.compileRequest(this.state.query, this.state.columns);
   }
 
   getState = () => this.state;
@@ -303,7 +305,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       if (sourceChanged || previousSourceMode !== options.source.mode) {
         this.syncControlledSource();
       }
-      if (queryChanged || previousSourceMode !== options.source.mode) {
+      if (previousSourceMode !== options.source.mode) {
         this.notifyControlledQuery(createGridEvent('query.external', 'source'));
       }
     } else if (sourceChanged || previousSourceMode !== options.source.mode) {
@@ -819,6 +821,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
             ...this.state.editing,
             active: { ...this.state.editing.active, draft: value },
             error: undefined,
+            errorCode: undefined,
           },
         },
         createGridEvent('editing.draft', 'user'),
@@ -834,7 +837,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
       if (!field || !row) return false;
       if (field.edit && field.edit.required && field.isEmpty(active.draft)) {
-        this.setEditingError('This field is required.');
+        this.setEditingError('This field is required.', 'required');
         return false;
       }
       this.editController?.abort();
@@ -843,7 +846,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.commit(
         {
           ...this.internalState,
-          editing: { ...this.state.editing, saving: true, error: undefined },
+          editing: {
+            ...this.state.editing,
+            saving: true,
+            error: undefined,
+            errorCode: undefined,
+          },
         },
         createGridEvent('editing.save.start', 'user'),
       );
@@ -852,7 +860,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         const validation = await field.validate?.(active.draft, row);
         if (controller.signal.aborted) return false;
         if (typeof validation === 'string' && validation) {
-          this.setEditingError(validation);
+          this.setEditingError(validation, 'validation');
           return false;
         }
         optimisticRow =
@@ -892,7 +900,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         if (optimisticRow) this.rollbackOptimisticEdit();
         this.editController = undefined;
         const normalized = normalizeError(error, 'Unable to save the value.');
-        this.setEditingError(normalized.message);
+        this.setEditingError(normalized.message, 'saveFailed');
         this.reportError(normalized, createGridEvent('editing.save.error', 'source'));
         return false;
       }
@@ -985,13 +993,17 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   };
 
   options = {
-    load: async (fieldId: string, search = '') => {
+    load: async (fieldId: string, search = '', options: { signal?: AbortSignal } = {}) => {
       const field = this.definition.fieldMap.get(fieldId);
       if (!field) throw new Error(`Unknown grid field: ${fieldId}`);
       const normalizedSearch = search.trim().toLocaleLowerCase();
-      if (!normalizedSearch) {
-        const facet = this.state.data.facets?.[fieldId];
-        if (facet?.length) return facet;
+      const facet = this.state.data.facets?.[fieldId];
+      if (facet?.length && (!normalizedSearch || !field.options)) {
+        return normalizedSearch
+          ? facet.filter((option) =>
+              String(option.label).toLocaleLowerCase().includes(normalizedSearch),
+            )
+          : facet;
       }
       if (!field.options) return [];
       if (Array.isArray(field.options)) {
@@ -1008,24 +1020,29 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const cached = this.optionCache.get(key);
       const cacheTime = provider.cacheTime ?? 30_000;
       if (cached?.value && Date.now() - cached.createdAt <= cacheTime) return cached.value;
-      if (cached?.promise) return cached.promise;
+      if (cached?.promise) return this.consumeOptionPromise(key, cached, options.signal);
 
       const controller = new AbortController();
+      const entry: OptionCacheEntry = { controller, consumers: 0, createdAt: Date.now() };
       const promise = provider
         .load({ field, query: this.state.query, search, signal: controller.signal })
         .then((items) => {
           const value = Array.isArray(items) ? items : [];
-          this.optionCache.set(key, { value, createdAt: Date.now() });
+          if (controller.signal.aborted) return [];
+          if (this.optionCache.get(key) === entry) {
+            this.optionCache.set(key, { value, createdAt: Date.now() });
+          }
           this.trimOptionCache();
           return value;
         })
         .catch((error) => {
-          this.optionCache.delete(key);
+          if (this.optionCache.get(key) === entry) this.optionCache.delete(key);
           if (controller.signal.aborted) return [];
           throw error;
         });
-      this.optionCache.set(key, { promise, controller, createdAt: Date.now() });
-      return promise;
+      entry.promise = promise;
+      this.optionCache.set(key, entry);
+      return this.consumeOptionPromise(key, entry, options.signal);
     },
     clear: (fieldId?: string) => {
       [...this.optionCache.entries()].forEach(([key, entry]) => {
@@ -1042,6 +1059,58 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.optionsValue.state &&
       Object.prototype.hasOwnProperty.call(this.optionsValue.state, slice),
     );
+  }
+
+  private consumeOptionPromise(
+    key: string,
+    entry: OptionCacheEntry,
+    signal?: AbortSignal,
+  ): Promise<GridOption[]> {
+    const promise = entry.promise;
+    if (!promise) return Promise.resolve(entry.value || []);
+    if (signal?.aborted) {
+      if (!entry.consumers && this.optionCache.get(key) === entry) {
+        this.optionCache.delete(key);
+        entry.controller?.abort();
+      }
+      return Promise.resolve([]);
+    }
+
+    entry.consumers = (entry.consumers || 0) + 1;
+    return new Promise<GridOption[]>((resolve, reject) => {
+      let finished = false;
+      const release = (cancelled: boolean) => {
+        if (finished) return;
+        finished = true;
+        signal?.removeEventListener('abort', onAbort);
+        entry.consumers = Math.max(0, (entry.consumers || 1) - 1);
+        if (cancelled && entry.consumers === 0 && this.optionCache.get(key) === entry) {
+          this.optionCache.delete(key);
+          entry.controller?.abort();
+        }
+      };
+      const onAbort = () => {
+        release(true);
+        resolve([]);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      promise.then(
+        (value) => {
+          if (finished) return;
+          release(false);
+          resolve(value);
+        },
+        (error: unknown) => {
+          if (finished) return;
+          release(false);
+          reject(error);
+        },
+      );
+    });
   }
 
   private rollbackOptimisticEdit(): void {
@@ -1131,11 +1200,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     );
   }
 
-  private setEditingError(error: string): void {
+  private setEditingError(error: string, errorCode?: GridState<Row>['editing']['errorCode']): void {
     this.commit(
       {
         ...this.internalState,
-        editing: { ...this.state.editing, saving: false, error },
+        editing: { ...this.state.editing, saving: false, error, errorCode },
       },
       createGridEvent('editing.error', 'source'),
     );
@@ -1214,7 +1283,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   }
 
   private visibleFieldIds(columns: GridColumnState, explicit?: string[]): string[] {
-    if (explicit?.length) return explicit;
+    if (explicit !== undefined) return explicit;
     const hidden = new Set(columns.hidden);
     return columns.order
       .filter((id) => !hidden.has(id))
@@ -1301,6 +1370,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
             requestId,
             reason,
           }),
+          query.pagination,
         );
         if (controller.signal.aborted || requestId !== this.requestId || this.destroyed) return;
         this.validateRows(result.rows);
@@ -1326,7 +1396,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     state: { fetching?: boolean; requestId?: number } | undefined,
     reason: GridRequestReason,
   ): void {
-    const result = this.normalizeFacets(normalizeGridResult(input));
+    const result = this.normalizeFacets(normalizeGridResult(input, this.state.query.pagination));
     this.validateRows(result.rows);
     this.commit(
       {
@@ -1408,8 +1478,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private syncControlledSource(): void {
     const source = this.optionsValue.source;
     if (source.mode !== 'controlled') return;
-    const result = this.normalizeFacets(normalizeGridResult(source.result));
+    let result: GridReadResult<Row>;
     try {
+      result = this.normalizeFacets(
+        normalizeGridResult(source.result, this.state.query.pagination),
+      );
       this.validateRows(result.rows);
     } catch (error) {
       this.applyRequestError(normalizeError(error), 'source');

@@ -28,7 +28,7 @@ const source = useMemo(() => createRemoteSource(...), [tenantId]);
 ## 请求效率
 
 - debounce 搜索输入，默认搜索组件已处理。
-- 使用 projection 只请求可见字段，但前提是后端真的能获益。
+- 使用 projection 只请求可见字段，但前提是后端真的能获益；通过 definition projection 和 `selectDependencies` 声明 rowKey、计算、权限及 renderer 所需数据。
 - facets 和 summary 只在接口支持时开启。
 - 使用 `AbortSignal` 取消 fetch、下载、选项加载和动作请求。
 - 不要在 `read` 内忽略 request，之后又用全量接口在前端二次过滤。

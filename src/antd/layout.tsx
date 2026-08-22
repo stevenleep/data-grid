@@ -12,8 +12,10 @@ import {
 } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
+import { renderGridValue } from './cells';
 import { resolveGridLocale } from './locale';
 import { operatorLabel } from './operators';
+import { gridNodeText, renderGridNode } from './render';
 
 function classes(...values: Array<string | undefined | false>) {
   return values.filter(Boolean).join(' ');
@@ -90,24 +92,35 @@ export function GridSearch<Row extends object>({
   const keyword = useGridSelector<Row, string>((state) => state.query.keyword);
   const external = controlled ?? keyword;
   const [value, setValue] = useState(external);
-  const mounted = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const committedRef = useRef(external.trim());
 
-  useEffect(() => setValue(external), [external]);
   useEffect(() => {
-    if (!mounted.current) {
-      mounted.current = true;
+    committedRef.current = external.trim();
+    setValue(external);
+  }, [external]);
+  useEffect(() => {
+    if (value === external || value.trim() === committedRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = undefined;
       return;
     }
-    const timer = setTimeout(
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(
       () => {
+        timerRef.current = undefined;
         const next = value.trim();
+        committedRef.current = next;
         if (onChange) onChange(next);
         else if (next !== keyword) instance.query.setKeyword(next, 'user');
       },
       Math.max(0, debounce),
     );
-    return () => clearTimeout(timer);
-  }, [debounce, instance, keyword, onChange, value]);
+    return () => {
+      clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+    };
+  }, [debounce, external, instance, keyword, onChange, value]);
 
   return (
     <Input
@@ -121,9 +134,12 @@ export function GridSearch<Row extends object>({
       disabled={disabled ?? (!onChange && !instance.capabilities.search)}
       onChange={(event) => setValue(event.target.value)}
       onPressEnter={() => {
+        clearTimeout(timerRef.current);
+        timerRef.current = undefined;
         const next = value.trim();
+        committedRef.current = next;
         if (onChange) onChange(next);
-        else instance.query.setKeyword(next, 'user');
+        else if (next !== keyword) instance.query.setKeyword(next, 'user');
       }}
     />
   );
@@ -206,7 +222,7 @@ export function GridStatus<Row extends object>() {
       {Boolean(data.warnings?.length) && (
         <div className="hui-grid__warnings" role="status">
           {data.warnings?.map((warning, index) => (
-            <span key={index}>{warning as ReactNode}</span>
+            <span key={index}>{renderGridNode(warning)}</span>
           ))}
         </div>
       )}
@@ -227,6 +243,8 @@ export interface GridSummaryProps {
 }
 
 export function GridSummary<Row extends object>({ renderItem }: GridSummaryProps = {}) {
+  const instance = useGridInstance<Row>();
+  const ui = useGridUi<Row>();
   const summary = useGridSelector<Row, GridSummaryValue[] | undefined>(
     (state) => state.data.summary,
   );
@@ -239,9 +257,20 @@ export function GridSummary<Row extends object>({ renderItem }: GridSummaryProps
             renderItem(item)
           ) : (
             <>
-              <span>{item.label as ReactNode}</span>
+              <span>{renderGridNode(item.label)}</span>
               <strong>
-                {(item.render ? item.render(item.value, item) : item.value) as ReactNode}
+                {renderGridNode(
+                  item.render
+                    ? item.render(item.value, item)
+                    : item.fieldId && instance.definition.fieldMap.has(item.fieldId)
+                      ? renderGridValue(
+                          item.value,
+                          instance.definition.fieldMap.get(item.fieldId)!,
+                          ui.language || 'zh-CN',
+                          ui.timeZone,
+                        )
+                      : item.value,
+                )}
               </strong>
             </>
           )}
@@ -325,12 +354,16 @@ export function GridPagination<Row extends object>({
   ) : null;
 
   if (query.pagination.type === 'cursor') {
+    const canGoPrevious = Boolean(
+      !data.fetching && data.pageInfo?.hasPrevious && data.pageInfo.previousCursor,
+    );
+    const canGoNext = Boolean(!data.fetching && data.pageInfo?.hasNext && data.pageInfo.nextCursor);
     return (
       <Space size={8}>
         {sizeSelect}
         <Button
           size="small"
-          disabled={!data.pageInfo?.hasPrevious}
+          disabled={!canGoPrevious}
           onClick={() =>
             instance.query.goToCursor(data.pageInfo?.previousCursor, 'backward', 'user')
           }
@@ -339,7 +372,7 @@ export function GridPagination<Row extends object>({
         </Button>
         <Button
           size="small"
-          disabled={!data.pageInfo?.hasNext}
+          disabled={!canGoNext}
           onClick={() => instance.query.goToCursor(data.pageInfo?.nextCursor, 'forward', 'user')}
         >
           {locale.nextPage}
@@ -369,12 +402,20 @@ export function GridPagination<Row extends object>({
     );
   }
 
+  const canGoPrevious =
+    !data.fetching && pagination.page > 1 && data.pageInfo?.hasPrevious !== false;
+  const canGoNext =
+    !data.fetching &&
+    (data.pageInfo?.hasNext !== undefined
+      ? data.pageInfo.hasNext
+      : data.rows.length >= pagination.pageSize);
+
   return (
     <Space size={8}>
       {sizeSelect}
       <Button
         size="small"
-        disabled={pagination.page <= 1 || data.pageInfo?.hasPrevious === false}
+        disabled={!canGoPrevious}
         onClick={() => instance.query.setPage(pagination.page - 1, 'user')}
       >
         {locale.previousPage}
@@ -382,7 +423,7 @@ export function GridPagination<Row extends object>({
       <span>{locale.page(pagination.page)}</span>
       <Button
         size="small"
-        disabled={data.pageInfo?.hasNext === false}
+        disabled={!canGoNext}
         onClick={() => instance.query.setPage(pagination.page + 1, 'user')}
       >
         {locale.nextPage}
@@ -426,7 +467,7 @@ export function GridActiveFilters<Row extends object>({
               instance.query.setFilters(removeFilterNode(filters, condition.id), 'user');
             }}
           >
-            {String(field?.title ?? condition.fieldId)} ·{' '}
+            {field ? gridNodeText(field.title) || field.id : condition.fieldId} ·{' '}
             {operatorLabel(condition.operator, ui.language)}
             {value ? ` · ${value}` : ''}
           </Tag>

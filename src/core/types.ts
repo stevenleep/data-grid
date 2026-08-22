@@ -66,6 +66,9 @@ export type GridFilterOperator =
   | 'isNotEmpty'
   | (string & {});
 
+export type GridFilterValueKind = 'none' | 'single' | 'multiple' | 'range';
+export type GridFilterOperatorValueKinds = Partial<Record<GridFilterOperator, GridFilterValueKind>>;
+
 export interface GridOption<Label = GridNode> {
   label: Label;
   value: GridPrimitive;
@@ -186,6 +189,7 @@ export interface GridEditorContext<Row extends object, Value = unknown> extends 
 export interface GridFilterEditorContext<Row extends object, Value = GridJsonValue | undefined> {
   field: GridResolvedField<Row>;
   operator: GridFilterOperator;
+  valueKind: GridFilterValueKind;
   value: Value;
   onChange: (value: Value) => void;
   instance: GridInstance<Row>;
@@ -219,6 +223,8 @@ export type GridFilterEditorRenderer<Row extends object> = (
 export interface GridValueTypeDefinition<Row extends object = object, Value = unknown> {
   defaultColumn?: GridColumnDisplay;
   operators?: GridFilterOperator[];
+  /** Value arity for custom operators; field-level declarations take precedence. */
+  operatorValueKinds?: GridFilterOperatorValueKinds;
   codec?: GridValueCodec<Value>;
   normalize?: (value: unknown, row: Row) => Value;
   equals?: (left: Value, right: Value) => boolean;
@@ -235,6 +241,8 @@ export interface GridFieldTransport<Value = unknown> {
   filterKey?: string;
   sortKey?: string;
   selectKey?: string;
+  /** Raw transport select keys required to materialize this field. */
+  selectDependencies?: readonly string[];
   encodeFilter?: (
     value: GridJsonValue | undefined,
     operator: GridFilterOperator,
@@ -245,6 +253,8 @@ export interface GridFieldTransport<Value = unknown> {
 export interface GridFieldFilter {
   enabled?: boolean;
   operators?: GridFilterOperator[];
+  /** Overrides value-type and built-in value arity for individual operators. */
+  operatorValueKinds?: GridFilterOperatorValueKinds;
   defaultOperator?: GridFilterOperator;
   placeholder?: string;
 }
@@ -423,6 +433,7 @@ export interface GridSchema {
   protocol: 'huiyun.data-grid/v1';
   id: string;
   revision: string | number;
+  projection?: GridProjectionDefinition;
   fields: GridFieldSchema[];
   columns?: GridColumnSchema[];
   actions?: GridActionSchema[];
@@ -529,10 +540,23 @@ export interface GridFeatureDefaults {
   views?: boolean;
 }
 
+export interface GridProjectionDefinition {
+  /**
+   * Raw transport select key(s) needed to resolve a functional or differently mapped row key.
+   * String/path row keys are inferred when this is omitted.
+   */
+  rowKey?: string | readonly string[];
+  /** Semantic field ids that must be returned even when their columns are hidden. */
+  requiredFields?: readonly string[];
+  /** Additional raw transport select keys required by renderers, permissions or actions. */
+  requiredKeys?: readonly string[];
+}
+
 export interface GridDefinition<Row extends object> {
   id: string;
   revision?: string | number;
   rowKey: string | GridPath | ((row: Row) => GridRowKey);
+  projection?: GridProjectionDefinition;
   fields: readonly GridAnyFieldDefinition<Row>[];
   columns?: readonly GridColumnDefinition<Row>[];
   valueTypes?: Record<string, GridValueTypeDefinition<Row>>;
@@ -727,6 +751,8 @@ export interface GridEditingState {
   };
   saving: boolean;
   error?: string;
+  /** Stable code adapters can translate without parsing the fallback message. */
+  errorCode?: 'required' | 'validation' | 'saveFailed';
 }
 
 export interface GridActionState {
@@ -883,8 +909,17 @@ export interface GridActionsApi<Row extends object> {
   key: (actionId: string, row?: Row) => string;
 }
 
+export interface GridOptionsLoadOptions {
+  /** Cancels only this caller; a shared provider request is aborted after every caller cancels. */
+  signal?: AbortSignal;
+}
+
 export interface GridOptionsApi {
-  load: (fieldId: string, search?: string) => Promise<GridOption[]>;
+  load: (
+    fieldId: string,
+    search?: string,
+    options?: GridOptionsLoadOptions,
+  ) => Promise<GridOption[]>;
   clear: (fieldId?: string) => void;
 }
 

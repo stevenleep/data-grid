@@ -86,6 +86,7 @@ const source = createControlledSource<Order>({
 ```
 
 Controlled 模式不会自行请求；组件只发出查询变化并渲染外部结果。
+`onQueryChange` 表示 Grid 提出的查询变更；父组件接受并通过 `state.query` 回传时不会再次回调，因此一次用户操作只应启动一次业务请求。外部路由或 Store 主动替换 query 同样不会被回声式发回。
 
 ## 能力声明
 
@@ -116,3 +117,5 @@ const capabilities = {
 - `estimated`：估算总数，应在 UI 中标识。
 - `atLeast`：至少有这么多，适合代价较高的计数。
 - 不返回 `total`：配合 `pageInfo.hasNext` 使用 cursor 或未知总数分页。
+
+数据结果是运行时协议，不只依赖 TypeScript：`rows` 必须是数组；`total.value` 必须是非负有限整数；`summary`、`warnings`、`facets` 和 `pageInfo` 必须符合各自结构。错误结果进入统一 error 状态，不会被静默转换成空列表。

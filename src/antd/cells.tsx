@@ -24,6 +24,7 @@ import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useGridOptions } from './hooks';
 import { resolveGridLocale } from './locale';
+import { gridNodeText, renderGridNode } from './render';
 
 const emptyCell = <span className="hui-grid__empty-value">—</span>;
 
@@ -40,7 +41,8 @@ function safeUrl(value: unknown, image = false): string | undefined {
 }
 
 function optionLabel(value: unknown, options: GridOption[] | undefined): ReactNode | undefined {
-  return options?.find((option) => String(option.value) === String(value))?.label as ReactNode;
+  const label = options?.find((option) => String(option.value) === String(value))?.label;
+  return label === undefined ? undefined : renderGridNode(label);
 }
 
 function objectLabel(value: unknown): string {
@@ -50,11 +52,15 @@ function objectLabel(value: unknown): string {
   return String(record.label ?? record.name ?? record.title ?? record.id ?? '');
 }
 
-function decimalText(value: unknown, locale: string, maximumFractionDigits = 20): string {
+function decimalText(
+  value: unknown,
+  locale: string,
+  maximumFractionDigits: number | null = 20,
+): string {
   const raw = String(value).trim();
   if (!/^[+-]?\d+(\.\d+)?$/.test(raw)) return raw;
   const [integer = '0', fraction] = raw.replace(/^\+/, '').split('.');
-  if (integer.replace('-', '').length <= 15) {
+  if (maximumFractionDigits !== null && canSafelyFormatDecimal(raw)) {
     const number = Number(raw);
     if (Number.isFinite(number)) {
       return new Intl.NumberFormat(locale, { maximumFractionDigits }).format(number);
@@ -66,7 +72,21 @@ function decimalText(value: unknown, locale: string, maximumFractionDigits = 20)
   const sign = integer.startsWith('-') ? '-' : '';
   const digits = integer.replace('-', '');
   const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, group);
-  return `${sign}${grouped}${fraction ? `${decimal}${fraction.slice(0, maximumFractionDigits)}` : ''}`;
+  const visibleFraction =
+    fraction && maximumFractionDigits !== null
+      ? fraction.slice(0, maximumFractionDigits)
+      : fraction;
+  return `${sign}${grouped}${visibleFraction ? `${decimal}${visibleFraction}` : ''}`;
+}
+
+function canSafelyFormatDecimal(value: unknown): boolean {
+  const raw = String(value).trim().replace(/^\+/, '');
+  if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return false;
+  const number = Number(raw);
+  if (!Number.isFinite(number)) return false;
+  if (!raw.includes('.')) return Number.isSafeInteger(number);
+  const significant = raw.replace('-', '').replace('.', '').replace(/^0+/, '').replace(/0+$/, '');
+  return significant.length <= 15;
 }
 
 function dateText(value: unknown, locale: string, timeZone: string | undefined, withTime: boolean) {
@@ -147,14 +167,23 @@ export function renderGridValue<Row extends object>(
         value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
       const amount = record?.amount ?? value;
       const currency = String(record?.currency ?? field.meta?.currency ?? 'CNY');
+      const configuredDigits = Number(field.meta?.maximumFractionDigits ?? 2);
+      const maximumFractionDigits = Number.isFinite(configuredDigits)
+        ? Math.min(20, Math.max(0, Math.trunc(configuredDigits)))
+        : 2;
       const number = Number(amount);
-      return Number.isFinite(number)
-        ? new Intl.NumberFormat(locale, {
+      if (Number.isFinite(number) && canSafelyFormatDecimal(amount)) {
+        try {
+          return new Intl.NumberFormat(locale, {
             style: 'currency',
             currency,
-            maximumFractionDigits: Number(field.meta?.maximumFractionDigits ?? 2),
-          }).format(number)
-        : `${currency} ${decimalText(amount, locale)}`;
+            maximumFractionDigits,
+          }).format(number);
+        } catch {
+          // Invalid currency identifiers fall back to a safe, exact text representation.
+        }
+      }
+      return `${currency} ${decimalText(amount, locale, null)}`;
     }
     case 'percent': {
       const scale = field.meta?.percentScale === 'ratio' ? 1 : 100;
@@ -199,11 +228,13 @@ export function renderGridValue<Row extends object>(
             const record =
               item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
             const label = optionLabel(item, options) ?? objectLabel(item);
-            const avatar = typeof record.avatar === 'string' ? record.avatar : undefined;
+            const avatar =
+              typeof record.avatar === 'string' ? safeUrl(record.avatar, true) : undefined;
+            const labelText = gridNodeText(label) || objectLabel(item) || gridNodeText(field.title);
             return (
               <span className="hui-grid__entity" key={`${String(label)}-${index}`}>
                 {field.valueType === 'user' && (
-                  <Avatar size={18} src={avatar}>
+                  <Avatar size={18} src={avatar} alt={labelText}>
                     {objectLabel(item).slice(0, 1)}
                   </Avatar>
                 )}
@@ -240,14 +271,18 @@ export function renderGridValue<Row extends object>(
       return (
         <Space size={4}>
           {values.slice(0, 3).map((item, index) => {
+            const record =
+              item && typeof item === 'object' ? (item as Record<string, unknown>) : undefined;
             const source = safeUrl(
-              typeof item === 'string'
-                ? item
-                : String((item as Record<string, unknown>)?.url ?? ''),
+              typeof item === 'string' ? item : String(record?.url ?? ''),
               true,
             );
+            const alt = String(
+              (record?.alt ?? record?.name ?? record?.label ?? gridNodeText(field.title)) ||
+                `Image ${index + 1}`,
+            );
             return source ? (
-              <Image key={`${source}-${index}`} width={28} height={28} src={source} />
+              <Image key={`${source}-${index}`} width={28} height={28} src={source} alt={alt} />
             ) : null;
           })}
         </Space>
@@ -283,8 +318,31 @@ export function GridCell<Row extends object>({ row, rowIndex, field }: GridCellP
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const value = field.getValue(row);
-  if (field.render) return field.render({ value, row, rowIndex, field, instance }) as ReactNode;
+  if (field.render) return renderGridNode(field.render({ value, row, rowIndex, field, instance }));
   return renderGridValue(value, field, ui.language || 'zh-CN', ui.timeZone);
+}
+
+interface EditingCellSnapshot {
+  active: boolean;
+  draft?: unknown;
+  saving: boolean;
+  error?: string;
+  errorCode?: 'required' | 'validation' | 'saveFailed';
+}
+
+const inactiveEditingCell: EditingCellSnapshot = {
+  active: false,
+  saving: false,
+};
+
+function editingCellEqual(left: EditingCellSnapshot, right: EditingCellSnapshot): boolean {
+  return (
+    left.active === right.active &&
+    left.draft === right.draft &&
+    left.saving === right.saving &&
+    left.error === right.error &&
+    left.errorCode === right.errorCode
+  );
 }
 
 export interface GridEditableCellProps<Row extends object> extends GridCellProps<Row> {
@@ -301,18 +359,32 @@ export function GridEditableCell<Row extends object>({
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
   const rowKey = instance.definition.getRowKey(row);
-  const editing = useGridSelector<Row, ReturnType<typeof instance.getState>['editing']>(
-    (state) => state.editing,
-  );
-  const active = editing.active?.rowKey === rowKey && editing.active.fieldId === field.id;
-  const draft = active ? editing.active?.draft : field.getValue(row);
+  const editing = useGridSelector<Row, EditingCellSnapshot>((state) => {
+    const active =
+      state.editing.active?.rowKey === rowKey && state.editing.active.fieldId === field.id;
+    return active
+      ? {
+          active: true,
+          draft: state.editing.active?.draft,
+          saving: state.editing.saving,
+          error: state.editing.error,
+          errorCode: state.editing.errorCode,
+        }
+      : inactiveEditingCell;
+  }, editingCellEqual);
+  const active = editing.active;
+  const draft = active ? editing.draft : field.getValue(row);
   const editorType = field.edit && field.edit.editor ? field.edit.editor : field.valueType;
-  const usesOptions = ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(
-    editorType,
-  );
+  const usesOptions = ['select', 'multiSelect', 'status', 'user', 'relation'].includes(editorType);
   const options = useGridOptions(field, '', active && usesOptions);
   const committingRef = useRef(false);
   const canEdit = instance.editing.canEdit(row, field.id);
+  const editingError =
+    editing.errorCode === 'required'
+      ? locale.required
+      : editing.errorCode === 'saveFailed'
+        ? locale.saveFailed
+        : editing.error;
   const commit = async () => {
     if (committingRef.current) return false;
     committingRef.current = true;
@@ -326,19 +398,21 @@ export function GridEditableCell<Row extends object>({
 
   let input: ReactNode;
   if (field.editor && active) {
-    input = field.editor({
-      value: field.getValue(row),
-      row,
-      rowIndex,
-      field,
-      instance,
-      draft,
-      saving: editing.saving,
-      error: editing.error,
-      setDraft: instance.editing.setDraft,
-      commit,
-      cancel: instance.editing.cancel,
-    }) as ReactNode;
+    input = renderGridNode(
+      field.editor({
+        value: field.getValue(row),
+        row,
+        rowIndex,
+        field,
+        instance,
+        draft,
+        saving: editing.saving,
+        error: editingError,
+        setDraft: instance.editing.setDraft,
+        commit,
+        cancel: instance.editing.cancel,
+      }),
+    );
   } else if (['number', 'decimal', 'money', 'percent', 'duration'].includes(editorType)) {
     input = (
       <InputNumber
@@ -363,6 +437,9 @@ export function GridEditableCell<Row extends object>({
         autoFocus
         open
         loading={options.loading}
+        notFoundContent={
+          options.loading ? <span role="status">{locale.loadingOptions}</span> : undefined
+        }
         mode={['multiSelect', 'user', 'relation'].includes(editorType) ? 'multiple' : undefined}
         options={
           editorType === 'boolean'
@@ -370,7 +447,10 @@ export function GridEditableCell<Row extends object>({
                 { label: ui.language?.startsWith('en') ? 'Yes' : '是', value: true },
                 { label: ui.language?.startsWith('en') ? 'No' : '否', value: false },
               ]
-            : (options.options as Array<{ label: ReactNode; value: string | number | boolean }>)
+            : (options.options.map((option) => ({
+                ...option,
+                label: renderGridNode(option.label),
+              })) as Array<{ label: ReactNode; value: string | number | boolean }>)
         }
         value={draft as string | number | boolean | (string | number)[] | undefined}
         onChange={(value) => {
@@ -423,9 +503,11 @@ export function GridEditableCell<Row extends object>({
 
   if (active) {
     return (
-      <Tooltip open={Boolean(editing.error)} title={editing.error} color="red">
+      <Tooltip open={Boolean(editingError)} title={editingError} color="red">
         <Spin spinning={editing.saving} size="small">
-          <div className="hui-grid__cell-editor">{input}</div>
+          <div className="hui-grid__cell-editor" aria-busy={editing.saving}>
+            {input}
+          </div>
         </Spin>
       </Tooltip>
     );
@@ -436,10 +518,13 @@ export function GridEditableCell<Row extends object>({
       className="hui-grid__editable-cell"
       tabIndex={0}
       role="button"
-      aria-label={locale.editCell(String(field.title))}
+      aria-label={locale.editCell(gridNodeText(field.title) || field.id)}
       onDoubleClick={() => instance.editing.begin(row, field.id)}
       onKeyDown={(event) => {
-        if (event.key === 'Enter') instance.editing.begin(row, field.id);
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          instance.editing.begin(row, field.id);
+        }
       }}
     >
       {children}

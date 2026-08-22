@@ -39,7 +39,7 @@ README 只保留概览和核心示例。完整接入说明位于 [docs/README.md
 
 - React 18+
 - Ant Design 6
-- Node.js 18+
+- Node.js 20.19+（仓库 CI 与 Vercel Demo 固定使用 Node.js 24）
 
 ```bash
 pnpm add @huiyun/data-grid antd @ant-design/icons
@@ -477,11 +477,12 @@ import '@huiyun/data-grid/style.css';
 
 ```bash
 pnpm install
-pnpm check
-pnpm pack:check
+pnpm release:check
 ```
 
-`definition.id` 必须稳定；当字段、列或运行时行为发生不兼容变更时提升 `revision`。发布前建议同时对根入口和 `/core`、`/react`、`/antd` 子路径做消费端 smoke test。
+`release:check` 会验证格式、类型、测试、覆盖率、库与 Demo 构建、包导出，以及实际 tarball 的 ESM、CommonJS、CSS 和类型消费。npm OIDC、Vercel 运行时与正式发版流程见[维护与发布](./docs/releasing.md)。
+
+`definition.id` 必须稳定；当字段、列或运行时行为发生不兼容变更时提升 `revision`。
 
 ## License
 

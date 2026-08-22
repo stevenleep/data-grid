@@ -77,6 +77,7 @@ export type {
   GridSummaryProps,
   GridTableProps,
   GridTablePlatformProps,
+  GridTableSelectionProps,
   GridToolbarProps,
   GridToolbarFeatures,
   GridUiConfig,

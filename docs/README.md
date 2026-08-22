@@ -17,6 +17,7 @@
 | [性能与生产建议](./performance.md)               | 服务端分页、请求竞争、缓存、渲染和稳定引用                 |
 | [API 索引](./api-reference.md)                   | 公共入口、核心类型、实例 API 和 AntD 组件索引              |
 | [故障排查](./troubleshooting.md)                 | 常见接入错误、查询不刷新、筛选无效和发布检查               |
+| [维护与发布](./releasing.md)                     | 兼容矩阵、包消费烟测、Vercel 和 npm Trusted Publishing     |
 
 ## 推荐阅读路径
 
@@ -30,4 +31,4 @@
 - `definition.id` 是列表的稳定身份，不要使用随机值。
 - 字段、列或持久化结构发生不兼容变化时提升 `revision`。
 - 查询协议当前由包内 TypeScript 类型约束；JSON Schema 协议标识为 `huiyun.data-grid/v1`。
-- 文档以仓库当前版本为准，发布前由 `pnpm check` 与 `pnpm pack:check` 校验。
+- 文档以仓库当前版本为准，发布前由 `pnpm release:check` 执行完整门禁。

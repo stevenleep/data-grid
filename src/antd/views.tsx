@@ -83,6 +83,7 @@ export function GridViewPanel<Row extends object>({ className }: GridViewPanelPr
                   size="small"
                   type="text"
                   icon={<EditOutlined />}
+                  aria-label={`${locale.rename}: ${view.name}`}
                   onClick={() => {
                     setRenaming(view.id);
                     setRenameValue(view.name);
@@ -94,6 +95,7 @@ export function GridViewPanel<Row extends object>({ className }: GridViewPanelPr
                   size="small"
                   type="text"
                   icon={<CopyOutlined />}
+                  aria-label={`${locale.duplicate}: ${view.name}`}
                   onClick={() => instance.views.duplicate(view.id)}
                 />
               </Tooltip>
@@ -101,7 +103,13 @@ export function GridViewPanel<Row extends object>({ className }: GridViewPanelPr
                 title={`${locale.remove} ${view.name}?`}
                 onConfirm={() => instance.views.remove(view.id)}
               >
-                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  aria-label={`${locale.remove}: ${view.name}`}
+                />
               </Popconfirm>
             </>
           )}

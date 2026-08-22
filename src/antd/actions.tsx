@@ -18,12 +18,31 @@ import type {
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { resolveGridLocale } from './locale';
+import { gridNodeText, renderGridNode } from './render';
 
 function actionStateEqual(
-  left: { loading: boolean; error?: string },
-  right: { loading: boolean; error?: string },
+  left: {
+    loading: boolean;
+    error?: string;
+    query: unknown;
+    selection: unknown;
+    rows: unknown;
+  },
+  right: {
+    loading: boolean;
+    error?: string;
+    query: unknown;
+    selection: unknown;
+    rows: unknown;
+  },
 ) {
-  return left.loading === right.loading && left.error === right.error;
+  return (
+    left.loading === right.loading &&
+    left.error === right.error &&
+    left.query === right.query &&
+    left.selection === right.selection &&
+    left.rows === right.rows
+  );
 }
 
 export interface GridActionButtonProps<Row extends object> {
@@ -53,14 +72,32 @@ export function GridActionButton<Row extends object>({
 }: GridActionButtonProps<Row>) {
   const instance = useGridInstance<Row>();
   const key = instance.actions.key(action.id, row);
-  const state = useGridSelector(
+  const state = useGridSelector<
+    Row,
+    {
+      loading: boolean;
+      error?: string;
+      query: unknown;
+      selection: unknown;
+      rows: readonly Row[];
+    }
+  >(
     (current) => ({
       loading: Boolean(current.actions.pending[key]),
       error: current.actions.errors[key],
+      query: current.query,
+      selection: current.selection,
+      rows: current.data.rows,
     }),
     actionStateEqual,
   );
-  const context = instance.actions.getContext(row, field, value);
+  const currentRow = row
+    ? state.rows.find(
+        (candidate) =>
+          instance.definition.getRowKey(candidate) === instance.definition.getRowKey(row),
+      ) || row
+    : undefined;
+  const context = instance.actions.getContext(currentRow, field, value);
   const visible =
     typeof action.visible === 'function' ? action.visible(context) : action.visible !== false;
   const disabled =
@@ -68,13 +105,21 @@ export function GridActionButton<Row extends object>({
     state.loading;
   const run = async () => {
     try {
-      await instance.actions.run(action, { row, field, value });
+      await instance.actions.run(action, { row: currentRow, field, value });
     } catch {
       // The shared action state and onError callback expose the failure.
     }
   };
   if (!visible) return null;
-  if (render) return render({ action, ...state, disabled, run });
+  if (render) {
+    return render({
+      action,
+      loading: state.loading,
+      error: state.error,
+      disabled,
+      run,
+    });
+  }
 
   const content = action.getConfirmation
     ? action.getConfirmation(context)
@@ -94,15 +139,16 @@ export function GridActionButton<Row extends object>({
       danger={action.intent === 'danger'}
       disabled={disabled}
       loading={state.loading}
-      icon={action.icon as ReactNode}
+      icon={renderGridNode(action.icon)}
+      aria-label={buttonProps?.['aria-label'] || gridNodeText(action.label) || action.id}
       onClick={requiresConfirmation ? undefined : () => void run()}
     >
-      {action.label as ReactNode}
+      {renderGridNode(action.label)}
     </Button>
   );
   const wrapped = requiresConfirmation ? (
     <Popconfirm
-      title={content as ReactNode}
+      title={renderGridNode(content)}
       onConfirm={() => void run()}
       okButtonProps={{ danger: action.intent === 'danger' }}
     >
@@ -143,12 +189,18 @@ export function GridActions<Row extends object>({
   useGridSelector<Row, ReturnType<typeof instance.getState>['selection']>(
     (state) => state.selection,
   );
-  useGridSelector<Row, readonly Row[]>((state) => state.data.rows);
+  const rows = useGridSelector<Row, readonly Row[]>((state) => state.data.rows);
   const actionState = useGridSelector<Row, ReturnType<typeof instance.getState>['actions']>(
     (state) => state.actions,
   );
-  const baseContext = instance.actions.getContext(row, field, value);
-  const resolved = (actions || instance.actions.list(placement, row)).filter((action) =>
+  const currentRow = row
+    ? rows.find(
+        (candidate) =>
+          instance.definition.getRowKey(candidate) === instance.definition.getRowKey(row),
+      ) || row
+    : undefined;
+  const baseContext = instance.actions.getContext(currentRow, field, value);
+  const resolved = (actions || instance.actions.list(placement, currentRow)).filter((action) =>
     typeof action.visible === 'function' ? action.visible(baseContext) : action.visible !== false,
   );
   const visible = resolved.slice(0, maxVisible);
@@ -160,15 +212,16 @@ export function GridActions<Row extends object>({
         const disabled =
           Boolean(
             typeof action.disabled === 'function' ? action.disabled(baseContext) : action.disabled,
-          ) || Boolean(actionState.pending[instance.actions.key(action.id, row)]);
+          ) || Boolean(actionState.pending[instance.actions.key(action.id, currentRow)]);
         return {
           key: action.id,
-          label: action.label as ReactNode,
-          icon: action.icon as ReactNode,
+          label: renderGridNode(action.label),
+          icon: renderGridNode(action.icon),
           danger: action.intent === 'danger',
           disabled,
           onClick: () => {
-            const run = () => instance.actions.run(action, { row, field, value }).catch(() => {});
+            const run = () =>
+              instance.actions.run(action, { row: currentRow, field, value }).catch(() => {});
             const confirm = action.getConfirmation
               ? action.getConfirmation(baseContext)
               : typeof action.confirm === 'function'
@@ -176,7 +229,7 @@ export function GridActions<Row extends object>({
                 : action.confirm;
             if (confirm) {
               modal.confirm({
-                title: confirm as ReactNode,
+                title: renderGridNode(confirm),
                 okButtonProps: { danger: action.intent === 'danger' },
                 onOk: run,
               });
@@ -184,7 +237,7 @@ export function GridActions<Row extends object>({
           },
         };
       }),
-    [actionState.pending, baseContext, field, instance, modal, overflow, row, value],
+    [actionState.pending, baseContext, currentRow, field, instance, modal, overflow, value],
   );
   if (!resolved.length) return null;
   return (
@@ -199,7 +252,7 @@ export function GridActions<Row extends object>({
         <GridActionButton
           key={action.id}
           action={action}
-          row={row}
+          row={currentRow}
           field={field}
           value={value}
           compact={compact}

@@ -4,10 +4,16 @@ import {
   compileGridQuery,
   createFilterCondition,
   createFilterGroup,
+  getFilterOperatorValueKind,
   getRequestScopeSignature,
   getRequestSignature,
+  isGridJsonValue,
+  matchesGridCondition,
+  pruneFilterGroup,
+  removeFilterNode,
   resolveGridCapabilities,
   resolveGridDefinition,
+  serializeGridQuery,
   validateGridQuery,
   createRemoteSource,
   type GridQuery,
@@ -58,7 +64,7 @@ describe('query protocol', () => {
         children: [{ field: 'profile_name', operator: 'contains', value: 'a' }],
       },
       sort: [{ field: 'name_sort', direction: 'asc' }],
-      select: ['name', 'score'],
+      select: ['id', 'name', 'score'],
     });
     expect(JSON.stringify(request)).not.toContain('ui-sort-id');
   });
@@ -158,6 +164,240 @@ describe('query protocol', () => {
     ];
     expect(() => validateGridQuery(query, definition, capabilities)).toThrow(
       'cannot be sorted more than once',
+    );
+  });
+
+  it('enforces operator-specific filter value shapes', () => {
+    const capabilities = resolveGridCapabilities(
+      createRemoteSource<Row>(async () => ({ rows: [] }), {
+        capabilities: { filter: { logic: 'nested', negation: true } },
+      }),
+    );
+    const query = makeQuery();
+    query.keyword = '';
+    query.sorts = [];
+    query.filters = createFilterGroup('and', [createFilterCondition('score', 'between', [1])]);
+    expect(() => validateGridQuery(query, definition, capabilities)).toThrow('is incomplete');
+    expect(() => compileGridQuery(query, definition)).toThrow('is incomplete');
+
+    query.filters = createFilterGroup('and', [createFilterCondition('name', 'isEmpty', 'stale')]);
+    expect(() => validateGridQuery(query, definition, capabilities)).toThrow(
+      'does not accept a value',
+    );
+  });
+
+  it('supports custom operator value kinds from value types and field overrides', () => {
+    interface CustomRow {
+      id: string;
+      code: string;
+      label: string;
+    }
+    const customDefinition = resolveGridDefinition<CustomRow>({
+      id: 'custom-operator-kinds',
+      rowKey: 'id',
+      valueTypes: {
+        code: {
+          operators: ['isAssigned', 'oneOfCodes', 'codeRange'],
+          operatorValueKinds: {
+            isAssigned: 'none',
+            oneOfCodes: 'multiple',
+            codeRange: 'range',
+          },
+        },
+      },
+      fields: [
+        { id: 'code', title: 'Code', valueType: 'code', filter: true },
+        {
+          id: 'label',
+          title: 'Label',
+          filter: {
+            operators: ['matchesTokens'],
+            operatorValueKinds: { matchesTokens: 'multiple' },
+          },
+        },
+      ],
+    });
+    const capabilities = resolveGridCapabilities(
+      createRemoteSource<CustomRow>(async () => ({ rows: [] })),
+    );
+    const customQuery = (condition: ReturnType<typeof createFilterCondition>): GridQuery => ({
+      pagination: { type: 'offset', page: 1, pageSize: 20 },
+      keyword: '',
+      filters: createFilterGroup('and', [condition]),
+      sorts: [],
+    });
+
+    const none = customQuery(createFilterCondition('code', 'isAssigned'));
+    expect(() => validateGridQuery(none, customDefinition, capabilities)).not.toThrow();
+    expect(compileGridQuery(none, customDefinition).filter).toEqual({
+      logic: 'and',
+      children: [{ field: 'code', operator: 'isAssigned' }],
+    });
+    none.filters.children[0] = createFilterCondition('code', 'isAssigned', true);
+    expect(() => validateGridQuery(none, customDefinition, capabilities)).toThrow(
+      'does not accept a value',
+    );
+
+    const multiple = customQuery(createFilterCondition('code', 'oneOfCodes', 'A'));
+    expect(() => validateGridQuery(multiple, customDefinition, capabilities)).toThrow(
+      'is incomplete',
+    );
+    multiple.filters.children[0] = createFilterCondition('code', 'oneOfCodes', ['A', 'B']);
+    expect(() => validateGridQuery(multiple, customDefinition, capabilities)).not.toThrow();
+
+    const range = customQuery(createFilterCondition('code', 'codeRange', ['A']));
+    expect(() => validateGridQuery(range, customDefinition, capabilities)).toThrow('is incomplete');
+    range.filters.children[0] = createFilterCondition('code', 'codeRange', ['A', 'Z']);
+    expect(() => validateGridQuery(range, customDefinition, capabilities)).not.toThrow();
+
+    const field = customDefinition.fieldMap.get('label')!;
+    const missingMultiple = createFilterGroup('and', [
+      createFilterCondition('label', 'matchesTokens'),
+    ]);
+    expect(
+      pruneFilterGroup(missingMultiple, (condition) =>
+        getFilterOperatorValueKind(
+          condition.operator,
+          field.filter ? field.filter.operatorValueKinds : undefined,
+        ),
+      ).children,
+    ).toEqual([]);
+    expect(field.filter && field.filter.operatorValueKinds?.matchesTokens).toBe('multiple');
+  });
+
+  it('prunes empty nested groups after deletion and before transport compilation', () => {
+    const condition = createFilterCondition('name', 'contains', 'ada');
+    const nested = createFilterGroup('or', [condition]);
+    const filters = createFilterGroup('and', [nested]);
+    expect(removeFilterNode(filters, condition.id).children).toEqual([]);
+
+    const query = makeQuery();
+    query.filters = createFilterGroup('and', [createFilterGroup('or')]);
+    expect(compileGridQuery(query, definition).filter).toBeUndefined();
+
+    query.filters = createFilterGroup('or');
+    query.filters.negated = true;
+    expect(() =>
+      validateGridQuery(
+        query,
+        definition,
+        resolveGridCapabilities(createRemoteSource<Row>(async () => ({ rows: [] }))),
+      ),
+    ).not.toThrow();
+  });
+
+  it('uses multiset semantics for array equality', () => {
+    const field = definition.fieldMap.get('tags')!;
+    const row: Row = { id: 1, profile: { name: 'Ada' }, score: 1, tags: ['a', 'b'] };
+    expect(
+      matchesGridCondition(row, field, createFilterCondition('tags', 'equals', ['a', 'a'])),
+    ).toBe(false);
+    expect(
+      matchesGridCondition(row, field, createFilterCondition('tags', 'equals', ['b', 'a'])),
+    ).toBe(true);
+  });
+
+  it('sorts and filters decimal strings without IEEE-754 precision loss', () => {
+    interface DecimalRow {
+      id: string;
+      amount: string;
+    }
+    const decimalDefinition = resolveGridDefinition<DecimalRow>({
+      id: 'decimal-query',
+      rowKey: 'id',
+      fields: [{ id: 'amount', title: 'Amount', valueType: 'decimal', filter: true, sort: true }],
+    });
+    const rows: DecimalRow[] = [
+      { id: 'low', amount: '9007199254740992' },
+      { id: 'high', amount: '9007199254740993' },
+      { id: 'equal', amount: '9007199254740992.000' },
+    ];
+    const query: GridQuery = {
+      pagination: { type: 'offset', page: 1, pageSize: 20 },
+      keyword: '',
+      filters: createFilterGroup('and', [
+        createFilterCondition('amount', 'greaterThan', '9007199254740992'),
+      ]),
+      sorts: [{ id: 'amount', fieldId: 'amount', direction: 'asc' }],
+    };
+    expect(applyLocalGridQuery(rows, query, decimalDefinition).rows.map((row) => row.id)).toEqual([
+      'high',
+    ]);
+    query.filters = createFilterGroup();
+    expect(applyLocalGridQuery(rows, query, decimalDefinition).rows.map((row) => row.id)).toEqual([
+      'low',
+      'equal',
+      'high',
+    ]);
+
+    const field = decimalDefinition.fieldMap.get('amount')!;
+    expect(
+      matchesGridCondition(
+        rows[0]!,
+        field,
+        createFilterCondition('amount', 'equals', '9007199254740992.0'),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects non-finite, cyclic and non-plain JSON values', () => {
+    expect(isGridJsonValue(Number.NaN)).toBe(false);
+    expect(isGridJsonValue(Number.POSITIVE_INFINITY)).toBe(false);
+    expect(isGridJsonValue(new Date())).toBe(false);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(isGridJsonValue(cyclic)).toBe(false);
+
+    const query = makeQuery();
+    query.filters.children[0] = {
+      ...query.filters.children[0]!,
+      value: undefined,
+    } as never;
+    expect(serializeGridQuery(query)).not.toHaveProperty('filters.children.0.value');
+    query.context = { invalid: Number.NaN };
+    expect(() => serializeGridQuery(query)).toThrow('numbers must be finite');
+  });
+
+  it('adds row identity and declared transport dependencies to projections', () => {
+    const projected = resolveGridDefinition<Row>({
+      id: 'projection-test',
+      rowKey: (row) => row.id,
+      projection: {
+        rowKey: 'record_id',
+        requiredFields: ['score'],
+        requiredKeys: ['permissions'],
+      },
+      fields: [
+        {
+          id: 'name',
+          title: 'Name',
+          transport: { selectKey: 'display_name', selectDependencies: ['profile'] },
+        },
+        { id: 'score', title: 'Score', transport: { selectKey: 'ranking' } },
+      ],
+    });
+    const query: GridQuery = {
+      pagination: { type: 'offset', page: 1, pageSize: 20 },
+      keyword: '',
+      filters: createFilterGroup(),
+      sorts: [],
+      projection: ['name'],
+    };
+    expect(compileGridQuery(query, projected).select).toEqual([
+      'record_id',
+      'permissions',
+      'display_name',
+      'profile',
+      'ranking',
+    ]);
+
+    const missingRowKey = resolveGridDefinition<Row>({
+      id: 'projection-missing-row-key',
+      rowKey: (row) => row.id,
+      fields: [{ id: 'name', title: 'Name' }],
+    });
+    expect(() => compileGridQuery(query, missingRowKey)).toThrow(
+      'functional rowKey requires definition.projection.rowKey',
     );
   });
 });

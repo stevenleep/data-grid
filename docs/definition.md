@@ -78,16 +78,21 @@ options: [
 
 ```ts
 options: {
-  dependsOn: ['departmentId'],
+  dependsOn: 'query',
   cacheTime: 60_000,
   load: async ({ search, query, signal }) => {
-    const items = await api.users.options({ search, department: query.context?.departmentId }, signal);
+    const items = await api.users.options(
+      { search, department: query.context?.departmentId },
+      signal,
+    );
     return items.map((item) => ({ label: item.name, value: item.id }));
   },
 }
 ```
 
-实例会去重相同选项请求、缓存结果，并在依赖变化时使用新缓存键。
+字符串数组形式的 `dependsOn` 指筛选字段 id；这些字段的条件变化会生成新的缓存键。需要依赖 keyword、sort、context 或整个查询时使用 `dependsOn: 'query'`。
+
+实例会去重相同选项请求、缓存结果，并在依赖变化时使用新缓存键。每个调用方都可以通过 `instance.options.load(fieldId, search, { signal })` 独立取消等待；共享同一请求的其他调用方不会受影响，全部调用方取消后才会中止底层 loader。
 
 ## 关系字段的本地筛选
 

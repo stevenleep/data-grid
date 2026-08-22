@@ -128,4 +128,31 @@ describe('grid definition', () => {
       'Missing renderer "missingRenderer"',
     );
   });
+
+  it('fails fast for unknown value types instead of silently treating them as text', () => {
+    expect(() =>
+      resolveGridDefinition<OrderRow>({
+        id: 'unknown-value-type',
+        rowKey: 'id',
+        fields: [{ id: 'amount', title: 'Amount', valueType: 'monye' }],
+      }),
+    ).toThrow('Unknown value type "monye"');
+  });
+
+  it('carries JSON-safe projection requirements through schema binding', () => {
+    const schema = defineGridSchema({
+      protocol: 'huiyun.data-grid/v1',
+      id: 'projected-schema',
+      revision: 1,
+      projection: {
+        rowKey: ['tenant_id', 'order_id'],
+        requiredFields: ['amount'],
+        requiredKeys: ['permissions'],
+      },
+      fields: [{ id: 'amount', title: 'Amount', valueType: 'money' }],
+    });
+    const bound = bindGridSchema<OrderRow>(schema, {}, (row) => row.id);
+    expect(bound.projection).toEqual(schema.projection);
+    expect(resolveGridDefinition(bound).projection).toEqual(schema.projection);
+  });
 });

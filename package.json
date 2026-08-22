@@ -1,6 +1,6 @@
 {
   "name": "@huiyun/data-grid",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A protocol-driven data grid with a headless core and an Ant Design 6 renderer for React admin applications.",
   "keywords": [
     "react",
@@ -96,33 +96,43 @@
     "demo:build": "pnpm --filter @huiyun/data-grid-demo build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
     "check": "pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm demo:build",
-    "prepublishOnly": "pnpm check",
-    "pack:check": "pnpm pack --dry-run"
+    "package:check": "pnpm build && pnpm pack:check && pnpm publint && pnpm attw && pnpm consumer:smoke:all",
+    "release:check": "pnpm check && pnpm test:coverage && pnpm package:check",
+    "prepublishOnly": "pnpm release:check",
+    "pack:check": "pnpm pack --dry-run",
+    "publint": "publint",
+    "attw": "attw --pack . --profile node16 --entrypoints . core react antd",
+    "consumer:smoke": "node scripts/package-smoke.mjs",
+    "consumer:smoke:all": "pnpm consumer:smoke -- --react=18 && pnpm consumer:smoke -- --react=19"
   },
   "peerDependencies": {
-    "@ant-design/icons": ">=6.0.0",
-    "antd": ">=6.0.0 <7",
-    "react": ">=18.0.0",
-    "react-dom": ">=18.0.0"
+    "@ant-design/icons": ">=6.0.0 <7.0.0",
+    "antd": ">=6.0.0 <7.0.0",
+    "react": ">=18.0.0 <20.0.0",
+    "react-dom": ">=18.0.0 <20.0.0"
   },
   "dependencies": {
     "dayjs": "^1.11.18"
   },
   "devDependencies": {
     "@ant-design/icons": "^6.3.2",
+    "@arethetypeswrong/cli": "0.18.5",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "^16.3.0",
     "@tsdown/css": "^0.22.14",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "4.1.11",
     "antd": "^6.6.1",
     "jsdom": "^27.2.0",
     "prettier": "^3.9.6",
+    "publint": "0.3.24",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "tsdown": "^0.22.14",
@@ -130,7 +140,7 @@
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0 <27"
   },
   "publishConfig": {
     "access": "public",

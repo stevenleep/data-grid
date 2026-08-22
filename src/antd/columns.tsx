@@ -11,6 +11,7 @@ import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useControllableOpen } from './hooks';
 import { resolveGridLocale } from './locale';
+import { gridNodeText, renderGridNode } from './render';
 
 function leafColumns<Row extends object>(
   columns: readonly GridResolvedColumn<Row>[],
@@ -35,51 +36,64 @@ export function GridColumnPanel<Row extends object>({
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
   const current = useGridSelector<Row, GridColumnState>((state) => state.columns);
-  const state = controlled || current;
+  const state = controlled ?? current;
+  const readOnly = controlled !== undefined && !onChange;
   const [search, setSearch] = useState('');
   const columns = useMemo(
     () => leafColumns(supplied || instance.definition.columns),
     [instance, supplied],
   );
+  const order = useMemo(
+    () => [
+      ...state.order.filter((id) => columns.some((column) => column.id === id)),
+      ...columns.map((column) => column.id).filter((id) => !state.order.includes(id)),
+    ],
+    [columns, state.order],
+  );
   const ordered = useMemo(
     () =>
       [...columns]
-        .sort((left, right) => state.order.indexOf(left.id) - state.order.indexOf(right.id))
+        .sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id))
         .filter((column) =>
-          String(column.title).toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+          gridNodeText(column.title).toLocaleLowerCase().includes(search.toLocaleLowerCase()),
         ),
-    [columns, search, state.order],
+    [columns, order, search],
   );
   const setVisible = (columnId: string, visible: boolean) => {
-    if (!onChange) return instance.columns.setVisible(columnId, visible);
+    if (readOnly) return;
+    if (controlled === undefined && !onChange)
+      return instance.columns.setVisible(columnId, visible);
     const hidden = new Set(state.hidden);
     if (visible) hidden.delete(columnId);
     else hidden.add(columnId);
-    onChange({ ...state, hidden: [...hidden] });
+    onChange?.({ ...state, hidden: [...hidden] });
   };
   const setPinned = (columnId: string, pinned: 'left' | 'right' | null) => {
-    if (!onChange) return instance.columns.setPinned(columnId, pinned);
-    onChange({ ...state, pinned: { ...state.pinned, [columnId]: pinned } });
+    if (readOnly) return;
+    if (controlled === undefined && !onChange) return instance.columns.setPinned(columnId, pinned);
+    onChange?.({ ...state, pinned: { ...state.pinned, [columnId]: pinned } });
   };
   const move = (columnId: string, direction: -1 | 1) => {
-    const order = [...state.order];
-    const index = order.indexOf(columnId);
+    const nextOrder = [...order];
+    const index = nextOrder.indexOf(columnId);
     const target = index + direction;
-    if (index < 0 || target < 0 || target >= order.length) return;
-    [order[index], order[target]] = [order[target]!, order[index]!];
-    if (onChange) onChange({ ...state, order });
-    else instance.columns.setOrder(order);
+    if (index < 0 || target < 0 || target >= nextOrder.length) return;
+    [nextOrder[index], nextOrder[target]] = [nextOrder[target]!, nextOrder[index]!];
+    if (readOnly) return;
+    if (controlled === undefined && !onChange) instance.columns.setOrder(nextOrder);
+    else onChange?.({ ...state, order: nextOrder });
   };
   const reset = () => {
-    if (onChange) onChange(instance.columns.getDefaultState());
-    else instance.columns.reset();
+    if (readOnly) return;
+    if (controlled === undefined && !onChange) instance.columns.reset();
+    else onChange?.(instance.columns.getDefaultState());
   };
 
   return (
     <div className="hui-grid__panel hui-grid__column-panel">
       <div className="hui-grid__panel-heading">
         <strong>{locale.fields}</strong>
-        <Button size="small" type="link" onClick={reset}>
+        <Button size="small" type="link" disabled={readOnly} onClick={reset}>
           {locale.reset}
         </Button>
       </div>
@@ -92,19 +106,26 @@ export function GridColumnPanel<Row extends object>({
       />
       <div className="hui-grid__column-list">
         {ordered.map((column) => {
+          const managed = Boolean(
+            !readOnly &&
+            (onChange ||
+              (controlled === undefined && instance.definition.columnMap.has(column.id))),
+          );
           const hidden = state.hidden.includes(column.id);
           const pinned = state.pinned[column.id] ?? null;
-          const position = state.order.indexOf(column.id);
+          const position = order.indexOf(column.id);
+          const title = gridNodeText(column.title) || column.id;
           return (
             <div className="hui-grid__column-item" key={column.id}>
               <Tooltip title={hidden ? locale.showColumn : locale.hideColumn}>
                 <Checkbox
                   checked={!hidden}
-                  disabled={column.hideable === false}
+                  disabled={!managed || column.hideable === false}
+                  aria-label={`${hidden ? locale.showColumn : locale.hideColumn}: ${title}`}
                   onChange={(event) => setVisible(column.id, event.target.checked)}
                 />
               </Tooltip>
-              <span className="hui-grid__column-label">{column.title as ReactNode}</span>
+              <span className="hui-grid__column-label">{renderGridNode(column.title)}</span>
               <Space.Compact>
                 <Dropdown
                   menu={{
@@ -117,18 +138,19 @@ export function GridColumnPanel<Row extends object>({
                     onClick: ({ key }) =>
                       setPinned(column.id, key === 'none' ? null : (key as 'left' | 'right')),
                   }}
-                  disabled={column.pinnable === false}
+                  disabled={!managed || column.pinnable === false}
                 >
                   <Button
                     size="small"
                     type={pinned ? 'default' : 'text'}
                     icon={<PushpinOutlined />}
+                    aria-label={`${pinned ? locale.unpin : `${locale.pinLeft}/${locale.pinRight}`}: ${title}`}
                   />
                 </Dropdown>
                 <Button
                   size="small"
                   type="text"
-                  disabled={position <= 0 || column.reorderable === false}
+                  disabled={!managed || position <= 0 || column.reorderable === false}
                   aria-label={locale.moveUp}
                   icon={<ArrowUpOutlined />}
                   onClick={() => move(column.id, -1)}
@@ -136,7 +158,9 @@ export function GridColumnPanel<Row extends object>({
                 <Button
                   size="small"
                   type="text"
-                  disabled={position >= state.order.length - 1 || column.reorderable === false}
+                  disabled={
+                    !managed || position >= order.length - 1 || column.reorderable === false
+                  }
                   aria-label={locale.moveDown}
                   icon={<ArrowDownOutlined />}
                   onClick={() => move(column.id, 1)}

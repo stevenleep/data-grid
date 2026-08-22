@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm demo:build",
+  "buildCommand": "node scripts/assert-node-major.mjs 24 && pnpm demo:build",
   "outputDirectory": "examples/demo/dist"
 }

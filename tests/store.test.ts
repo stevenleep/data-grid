@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createControlledSource,
   createGrid,
   createLocalSource,
   createRemoteSource,
@@ -192,6 +193,110 @@ describe('grid store', () => {
       state: { query: acceptedQuery },
     });
     expect(grid.getState().query.keyword).toBe('accepted-later');
+    grid.destroy();
+  });
+
+  it('does not echo an accepted controlled query back to a controlled source', async () => {
+    const query: GridQuery = {
+      pagination: { type: 'offset', page: 1, pageSize: 1 },
+      keyword: '',
+      filters: { id: 'root', type: 'group', logic: 'and', children: [] },
+      sorts: [],
+    };
+    const result = { rows: [rows[0]!] };
+    const onQueryChange = vi.fn();
+    let desired: GridState<Row> | undefined;
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createControlledSource({ result, onQueryChange }),
+      state: { query },
+      onStateChange: (state) => {
+        desired = state;
+      },
+    });
+    await grid.start();
+    onQueryChange.mockClear();
+
+    grid.query.setKeyword('once');
+    expect(onQueryChange).toHaveBeenCalledTimes(1);
+    expect(onQueryChange.mock.calls[0]?.[0].keyword).toBe('once');
+
+    grid.updateOptions({
+      definition: definition(),
+      source: createControlledSource({ result, onQueryChange }),
+      state: { query: desired!.query },
+      onStateChange: (state) => {
+        desired = state;
+      },
+    });
+    expect(grid.getState().query.keyword).toBe('once');
+    expect(onQueryChange).toHaveBeenCalledTimes(1);
+    grid.destroy();
+  });
+
+  it('cancels option consumers independently and aborts the provider when all cancel', async () => {
+    const firstRequest = deferred<Array<{ label: string; value: string }>>();
+    const secondRequest = deferred<Array<{ label: string; value: string }>>();
+    const providerSignals: AbortSignal[] = [];
+    const loader = vi.fn(({ search, signal }: { search: string; signal: AbortSignal }) => {
+      providerSignals.push(signal);
+      return search === 'first' ? firstRequest.promise : secondRequest.promise;
+    });
+    const grid = createGrid<Row>({
+      definition: definition({
+        fields: [
+          {
+            id: 'name',
+            title: 'Name',
+            options: { load: loader },
+          },
+        ],
+      }),
+      source: createLocalSource(rows),
+    });
+
+    const firstConsumer = new AbortController();
+    const secondConsumer = new AbortController();
+    const first = grid.options.load('name', 'first', { signal: firstConsumer.signal });
+    const shared = grid.options.load('name', 'first', { signal: secondConsumer.signal });
+    expect(loader).toHaveBeenCalledTimes(1);
+    firstConsumer.abort();
+    await expect(first).resolves.toEqual([]);
+    expect(providerSignals[0]?.aborted).toBe(false);
+    firstRequest.resolve([{ label: 'One', value: 'one' }]);
+    await expect(shared).resolves.toEqual([{ label: 'One', value: 'one' }]);
+
+    const thirdConsumer = new AbortController();
+    const fourthConsumer = new AbortController();
+    const third = grid.options.load('name', 'second', { signal: thirdConsumer.signal });
+    const fourth = grid.options.load('name', 'second', { signal: fourthConsumer.signal });
+    expect(loader).toHaveBeenCalledTimes(2);
+    thirdConsumer.abort();
+    expect(providerSignals[1]?.aborted).toBe(false);
+    fourthConsumer.abort();
+    await expect(Promise.all([third, fourth])).resolves.toEqual([[], []]);
+    expect(providerSignals[1]?.aborted).toBe(true);
+    grid.destroy();
+  });
+
+  it('searches facet-backed options locally when no option provider is declared', async () => {
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createLocalSource(rows),
+      defaultState: {
+        data: {
+          facets: {
+            name: [
+              { label: 'Alpha', value: 'alpha' },
+              { label: 'Beta', value: 'beta' },
+            ],
+          },
+        },
+      },
+    });
+    await expect(grid.options.load('name', 'alp')).resolves.toEqual([
+      { label: 'Alpha', value: 'alpha' },
+    ]);
     grid.destroy();
   });
 

@@ -5,9 +5,12 @@ import type {
   GridColumnSchema,
   GridDefinition,
   GridFieldDefinition,
+  GridFieldFilter,
   GridFieldRuntime,
   GridFieldSchema,
   GridFilterOperator,
+  GridFilterOperatorValueKinds,
+  GridFilterValueKind,
   GridJsonValue,
   GridResolvedColumn,
   GridResolvedDefinition,
@@ -17,7 +20,8 @@ import type {
   GridSchema,
   GridValueTypeDefinition,
 } from './types';
-import { getPathValue, isEmptyValue, stableStringify } from './model';
+import { getFilterOperatorValueKind, getPathValue, isEmptyValue, stableStringify } from './model';
+import { compareExactNumeric } from './numeric';
 
 const textOperators: GridFilterOperator[] = [
   'contains',
@@ -87,22 +91,9 @@ const jsonCodec = {
   },
 };
 
-function numeric(value: unknown): number | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  if (value && typeof value === 'object' && 'amount' in value) {
-    return numeric((value as { amount: unknown }).amount);
-  }
-  return undefined;
-}
-
 function compareUnknown(left: unknown, right: unknown): number {
-  const leftNumber = numeric(left);
-  const rightNumber = numeric(right);
-  if (leftNumber !== undefined && rightNumber !== undefined) return leftNumber - rightNumber;
+  const numericResult = compareExactNumeric(left, right);
+  if (numericResult !== undefined) return numericResult;
   return String(left ?? '').localeCompare(String(right ?? ''), undefined, {
     numeric: true,
     sensitivity: 'base',
@@ -258,21 +249,89 @@ function normalizeFeature<Value extends { enabled?: boolean }>(
   };
 }
 
+const filterValueKinds = new Set<GridFilterValueKind>(['none', 'single', 'multiple', 'range']);
+
+function checkedOperatorValueKinds(
+  value: GridFilterOperatorValueKinds | undefined,
+  label: string,
+): GridFilterOperatorValueKinds {
+  if (value === undefined) return {};
+  const prototype = value && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    (prototype !== Object.prototype && prototype !== null) ||
+    Object.getOwnPropertySymbols(value).length > 0
+  ) {
+    throw new Error(`${label} must be an operator-to-value-kind object.`);
+  }
+  Object.entries(value).forEach(([operator, kind]) => {
+    if (!operator.trim() || !filterValueKinds.has(kind as GridFilterValueKind)) {
+      throw new Error(`${label} contains an invalid declaration for "${operator}".`);
+    }
+  });
+  return value;
+}
+
 function resolveField<Row extends object>(
   field: GridAnyFieldDefinition<Row>,
   valueTypes: Record<string, GridValueTypeDefinition<Row>>,
 ): GridAnyResolvedField<Row> {
   const valueType = field.valueType || 'text';
-  const type =
-    valueTypes[valueType] || (builtinValueTypes.text as unknown as GridValueTypeDefinition<Row>);
+  const type = valueTypes[valueType];
+  if (!type) {
+    throw new Error(
+      `Unknown value type "${valueType}" for field "${field.id}". Register it in valueTypes.`,
+    );
+  }
   const path = field.path || [field.id];
   const getValue = field.accessor || ((row: Row) => getPathValue(row, path));
   const normalize = field.normalize || type.normalize || ((value: unknown) => value);
   const transport = field.transport || {};
-  const filter = normalizeFeature(field.filter, {
+  let filter = normalizeFeature(field.filter, {
     operators: type.operators,
     defaultOperator: type.operators?.[0] || 'equals',
   });
+  if (filter) {
+    const operators = [...new Set(filter.operators || ['equals'])];
+    if (!operators.length || operators.some((operator) => !operator.trim())) {
+      throw new Error(`Filter operators for field "${field.id}" must be non-empty strings.`);
+    }
+    const fieldFilter = typeof field.filter === 'object' ? field.filter : undefined;
+    const defaultOperator =
+      fieldFilter?.defaultOperator ||
+      (fieldFilter?.operators ? operators[0] : filter.defaultOperator) ||
+      operators[0]!;
+    if (!operators.includes(defaultOperator)) {
+      throw new Error(
+        `Default filter operator "${defaultOperator}" is not available for field "${field.id}".`,
+      );
+    }
+    const typeKinds = checkedOperatorValueKinds(
+      type.operatorValueKinds,
+      `Operator value kinds for value type "${valueType}"`,
+    );
+    const fieldKinds = checkedOperatorValueKinds(
+      fieldFilter?.operatorValueKinds,
+      `Operator value kinds for field "${field.id}"`,
+    );
+    Object.keys(fieldKinds).forEach((operator) => {
+      if (!operators.includes(operator)) {
+        throw new Error(
+          `Operator value kind for "${operator}" is declared but the operator is not available for field "${field.id}".`,
+        );
+      }
+    });
+    const configuredKinds = { ...typeKinds, ...fieldKinds };
+    const operatorValueKinds = Object.fromEntries(
+      operators.map((operator) => [
+        operator,
+        getFilterOperatorValueKind(operator, configuredKinds),
+      ]),
+    ) as GridFieldFilter['operatorValueKinds'];
+    filter = { ...filter, operators, defaultOperator, operatorValueKinds };
+  }
   const sort = normalizeFeature(field.sort);
   const edit = normalizeFeature(field.edit);
 
@@ -346,6 +405,17 @@ function flattenColumns<Row extends object>(
   ]);
 }
 
+function validateNonEmptyStrings(value: unknown, label: string): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array of strings.`);
+  value.forEach((item) => {
+    if (typeof item !== 'string' || !item.trim()) {
+      throw new Error(`${label} must contain non-empty strings.`);
+    }
+  });
+  return value as string[];
+}
+
 export function isResolvedGridDefinition<Row extends object>(
   definition: GridDefinition<Row> | GridResolvedDefinition<Row>,
 ): definition is GridResolvedDefinition<Row> {
@@ -370,6 +440,33 @@ export function resolveGridDefinition<Row extends object>(
     return resolveField(field, valueTypes);
   });
   const fieldMap = new Map(fields.map((field) => [field.id, field]));
+  const requiredFields = validateNonEmptyStrings(
+    definition.projection?.requiredFields,
+    'Projection requiredFields',
+  );
+  requiredFields.forEach((fieldId) => {
+    if (!fieldMap.has(fieldId)) {
+      throw new Error(`Projection references unknown required field "${fieldId}".`);
+    }
+  });
+  const configuredRowKey = definition.projection?.rowKey;
+  if (typeof configuredRowKey === 'string') {
+    if (!configuredRowKey.trim()) {
+      throw new Error('Projection rowKey must be a non-empty transport key.');
+    }
+  } else {
+    const keys = validateNonEmptyStrings(configuredRowKey, 'Projection rowKey');
+    if (configuredRowKey !== undefined && keys.length === 0) {
+      throw new Error('Projection rowKey must contain at least one transport key.');
+    }
+  }
+  validateNonEmptyStrings(definition.projection?.requiredKeys, 'Projection requiredKeys');
+  fields.forEach((field) => {
+    validateNonEmptyStrings(
+      field.transport.selectDependencies,
+      `Projection dependency keys for field "${field.id}"`,
+    );
+  });
   const fieldDefinitions = new Map(definition.fields.map((field) => [field.id, field]));
   const inputColumns =
     definition.columns ||
@@ -525,6 +622,7 @@ export function bindGridSchema<Row extends object>(
     id: schema.id,
     revision: schema.revision,
     rowKey,
+    projection: schema.projection,
     fields: schema.fields.map((field) =>
       bindField(field, runtime.fields?.[field.id] || {}, runtime),
     ),
@@ -562,5 +660,6 @@ export function definitionSignature<Row extends object>(
     revision: definition.revision,
     fields: definition.fields.map((field) => field.id),
     columns: [...definition.columnMap.keys()],
+    projection: definition.projection,
   });
 }

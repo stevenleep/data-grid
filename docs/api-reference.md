@@ -23,7 +23,7 @@
 - `bindGridSchema`
 - `builtinValueTypes`
 
-核心类型：`GridDefinition`、`GridFieldDefinition`、`GridColumnDefinition`、`GridValueTypeDefinition`、`GridSchema`、`GridRuntime`。
+核心类型：`GridDefinition`、`GridProjectionDefinition`、`GridFieldDefinition`、`GridColumnDefinition`、`GridValueTypeDefinition`、`GridSchema`、`GridRuntime`。
 
 ## 数据源
 
@@ -45,9 +45,11 @@
 - `createFilterGroup`
 - `createFilterCondition`
 - `addFilterNode` / `updateFilterNode` / `removeFilterNode` / `moveFilterNode`
+- `pruneFilterGroup` / `pruneEmptyFilterGroups`
+- `getFilterOperatorValueKind`
 - `getRequestSignature`
 
-核心类型：`GridQuery`、`GridRequestQuery`、`GridFilterGroup`、`GridFilterCondition`、`GridSort`、`GridPagination`。
+核心类型：`GridQuery`、`GridRequestQuery`、`GridFilterGroup`、`GridFilterCondition`、`GridFilterValueKind`、`GridFilterOperatorValueKinds`、`GridSort`、`GridPagination`。
 
 ## 实例
 
@@ -59,7 +61,7 @@ instance.data; // reload / invalidate / updateRow / patchRow
 instance.views; // create / rename / duplicate / save / apply / remove
 instance.editing; // canEdit / begin / draft / commit / cancel
 instance.actions; // list / context / run / key
-instance.options; // load / clear
+instance.options; // load(fieldId, search?, { signal? }) / clear
 ```
 
 实例创建：`createGrid`、`useGrid`。访问：`useGridInstance`。订阅：`useGridSelector`、`useGridEvent`。
@@ -102,7 +104,7 @@ instance.options; // load / clear
 - `GridEditableCell`
 - `renderGridValue`
 
-交互类型：`GridRowClickContext`、`GridCellClickContext`、`GridRowInteractionContext`、`GridCellInteractionContext`、`GridRowActionsConfig`。
+交互类型：`GridRowClickContext`、`GridCellClickContext`、`GridRowInteractionContext`、`GridCellInteractionContext`、`GridRowActionsConfig`、`GridTableSelectionProps`。
 
 ## DataGrid 常用 Props
 

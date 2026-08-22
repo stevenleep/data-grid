@@ -25,6 +25,7 @@ import {
   countFilterConditions,
   createFilterCondition,
   createFilterGroup,
+  getFilterOperatorValueKind,
   moveFilterNode,
   normalizeFilterValue,
   pruneFilterGroup,
@@ -39,7 +40,8 @@ import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useControllableOpen, useGridOptions } from './hooks';
 import { resolveGridLocale } from './locale';
-import { noValueOperators, operatorLabel } from './operators';
+import { operatorLabel } from './operators';
+import { renderGridNode } from './render';
 
 function defaultOperator<Row extends object>(field: GridResolvedField<Row>) {
   return field.filter
@@ -61,19 +63,69 @@ function GridFilterValue<Row extends object>({
   const locale = resolveGridLocale(ui.locale, ui.language);
   const [search, setSearch] = useState('');
   const options = useGridOptions(field, search);
-  const range = condition.operator === 'between' || condition.operator === 'notBetween';
-  if (noValueOperators.has(condition.operator)) {
+  const valueKind = getFilterOperatorValueKind(
+    condition.operator,
+    field.filter ? field.filter.operatorValueKinds : undefined,
+  );
+  const range = valueKind === 'range';
+  if (valueKind === 'none') {
     return <span className="hui-grid__filter-no-value">{locale.filterNoValue}</span>;
   }
 
   if (field.filterEditor) {
-    return field.filterEditor({
-      field,
-      operator: condition.operator,
-      value: condition.value,
-      onChange,
-      instance,
-    }) as ReactNode;
+    return renderGridNode(
+      field.filterEditor({
+        field,
+        operator: condition.operator,
+        valueKind,
+        value: condition.value,
+        onChange,
+        instance,
+      }),
+    );
+  }
+
+  const optionLike = Boolean(
+    field.options ||
+    ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(field.valueType),
+  );
+  const resolvedOptions =
+    field.valueType === 'boolean'
+      ? [
+          { label: ui.language?.startsWith('en') ? 'Yes' : '是', value: true },
+          { label: ui.language?.startsWith('en') ? 'No' : '否', value: false },
+        ]
+      : options.options.map((option) => ({
+          ...option,
+          label: renderGridNode(option.label),
+        }));
+
+  if (valueKind === 'multiple') {
+    return (
+      <Tooltip title={options.error?.message} open={Boolean(options.error)} color="red">
+        <Select
+          size="small"
+          allowClear
+          showSearch
+          mode={optionLike ? 'multiple' : 'tags'}
+          loading={options.loading}
+          notFoundContent={
+            options.loading ? <span role="status">{locale.loadingOptions}</span> : undefined
+          }
+          filterOption={optionLike ? false : undefined}
+          options={
+            resolvedOptions as Array<{
+              label: ReactNode;
+              value: string | number | boolean;
+            }>
+          }
+          value={condition.value as (string | number | boolean)[] | undefined}
+          placeholder={field.filter ? field.filter.placeholder : undefined}
+          onSearch={optionLike ? setSearch : undefined}
+          onChange={(value) => onChange(normalizeFilterValue(value))}
+        />
+      </Tooltip>
+    );
   }
 
   if (field.valueType === 'date' || field.valueType === 'dateTime') {
@@ -144,36 +196,78 @@ function GridFilterValue<Row extends object>({
     );
   }
 
-  if (
-    field.options ||
-    ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(field.valueType)
-  ) {
-    const multiple =
-      ['in', 'notIn', 'containsAny', 'containsAll', 'containsNone'].includes(condition.operator) ||
-      ['multiSelect', 'user', 'relation'].includes(field.valueType);
-    const resolvedOptions =
-      field.valueType === 'boolean'
-        ? [
-            { label: ui.language?.startsWith('en') ? 'Yes' : '是', value: true },
-            { label: ui.language?.startsWith('en') ? 'No' : '否', value: false },
-          ]
-        : options.options;
+  if (optionLike) {
+    if (range) {
+      const values = Array.isArray(condition.value) ? condition.value : [];
+      const selectOptions = resolvedOptions as Array<{
+        label: ReactNode;
+        value: string | number | boolean;
+      }>;
+      return (
+        <Space.Compact>
+          <Select
+            size="small"
+            allowClear
+            showSearch
+            loading={options.loading}
+            filterOption={false}
+            options={selectOptions}
+            value={values[0] as string | number | boolean | undefined}
+            onSearch={setSearch}
+            onChange={(value) => onChange([normalizeFilterValue(value) ?? null, values[1] ?? null])}
+          />
+          <Select
+            size="small"
+            allowClear
+            showSearch
+            loading={options.loading}
+            filterOption={false}
+            options={selectOptions}
+            value={values[1] as string | number | boolean | undefined}
+            onSearch={setSearch}
+            onChange={(value) => onChange([values[0] ?? null, normalizeFilterValue(value) ?? null])}
+          />
+        </Space.Compact>
+      );
+    }
     return (
       <Tooltip title={options.error?.message} open={Boolean(options.error)} color="red">
         <Select
           size="small"
           allowClear
           showSearch
-          mode={multiple ? 'multiple' : undefined}
           loading={options.loading}
+          notFoundContent={
+            options.loading ? <span role="status">{locale.loadingOptions}</span> : undefined
+          }
           filterOption={false}
           options={resolvedOptions as Array<{ label: ReactNode; value: string | number | boolean }>}
-          value={condition.value as string | number | boolean | (string | number)[] | undefined}
+          value={condition.value as string | number | boolean | undefined}
           placeholder={field.filter ? field.filter.placeholder : undefined}
           onSearch={setSearch}
           onChange={(value) => onChange(normalizeFilterValue(value))}
         />
       </Tooltip>
+    );
+  }
+
+  if (range) {
+    const values = Array.isArray(condition.value) ? condition.value : [];
+    return (
+      <Space.Compact>
+        <Input
+          size="small"
+          allowClear
+          value={values[0] == null ? '' : String(values[0])}
+          onChange={(event) => onChange([event.target.value || null, values[1] ?? null])}
+        />
+        <Input
+          size="small"
+          allowClear
+          value={values[1] == null ? '' : String(values[1])}
+          onChange={(event) => onChange([values[0] ?? null, event.target.value || null])}
+        />
+      </Space.Compact>
     );
   }
 
@@ -288,7 +382,7 @@ function GridFilterGroupEditor<Row extends object>({
                   size="small"
                   value={node.fieldId}
                   options={fields.map((item) => ({
-                    label: item.title as ReactNode,
+                    label: renderGridNode(item.title),
                     value: item.id,
                   }))}
                   onChange={(fieldId) => {
@@ -436,8 +530,18 @@ export function GridFilterPanel<Row extends object>({
   onClear,
   onCancel,
 }: GridFilterPanelProps<Row>) {
+  const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
+  const resolveValueKind = (condition: GridFilterCondition) => {
+    const field =
+      fields?.find((item) => item.id === condition.fieldId) ||
+      instance.definition.fieldMap.get(condition.fieldId);
+    return getFilterOperatorValueKind(
+      condition.operator,
+      field?.filter ? field.filter.operatorValueKinds : undefined,
+    );
+  };
   return (
     <div className="hui-grid__panel hui-grid__filter-panel">
       <GridFilterBuilder value={value} onChange={onChange} fields={fields} />
@@ -451,7 +555,11 @@ export function GridFilterPanel<Row extends object>({
         <Button size="small" onClick={onClear}>
           {locale.clear}
         </Button>
-        <Button size="small" type="primary" onClick={() => onApply?.(pruneFilterGroup(value))}>
+        <Button
+          size="small"
+          type="primary"
+          onClick={() => onApply?.(pruneFilterGroup(value, resolveValueKind))}
+        >
           {locale.apply}
         </Button>
       </div>

@@ -99,3 +99,10 @@ const instance = useGrid({ definition, source });
 适合放在 DataGrid props：语言、时区、主题、分页尺寸、行/值事件、页面级空态和表格平台属性。
 
 适合放在业务组件：Modal、Drawer、路由跳转、表单、权限服务和具体 API 调用。
+
+## 组合契约
+
+- 独立使用 `GridActionButton` 时，按钮会订阅 query、selection 和当前 rows，`visible` / `disabled` 与默认 `GridActions` 保持一致。
+- `GridTable.selection` 由 Grid 持有选中 key；业务可以提供其他 AntD rowSelection 外观配置，并通过 `onSelect` / `onSelectAll` 观察事件，但不能从两个地方同时控制 selected keys。
+- 临时传给 `GridTable.columns`、但未注册在 definition 的展示列可以渲染；它们不会写入实例列状态。需要显隐、固定、拖动、宽度持久化或投影时，应把列注册进 definition，或给受控 `GridColumnPanel` 提供完整 column state。
+- 行、可点击单元格和可编辑单元格支持 Enter / Space。自带链接、按钮、输入框等交互后代不会重复触发行或值点击。

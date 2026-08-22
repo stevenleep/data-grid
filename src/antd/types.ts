@@ -113,6 +113,11 @@ export interface GridRowActionsConfig {
   title?: ReactNode;
 }
 
+export type GridTableSelectionProps<Row extends object> = Omit<
+  NonNullable<TableProps<Row>['rowSelection']>,
+  'selectedRowKeys' | 'defaultSelectedRowKeys' | 'preserveSelectedRowKeys'
+>;
+
 export interface GridFooterFeatures {
   selection?: boolean;
   summary?: boolean;
@@ -127,12 +132,7 @@ export interface GridUiConfig<Row extends object> {
   theme?: ThemeConfig;
   antdLocale?: AntdLocale;
   pageSizeOptions?: number[];
-  selection?:
-    | boolean
-    | Omit<
-        NonNullable<TableProps<Row>['rowSelection']>,
-        'selectedRowKeys' | 'onChange' | 'onSelect' | 'onSelectAll'
-      >;
+  selection?: boolean | GridTableSelectionProps<Row>;
   tableProps?: GridTablePlatformProps<Row>;
   onRowClick?: (context: GridRowClickContext<Row>) => void;
   onCellClick?: (context: GridCellClickContext<Row>) => void;

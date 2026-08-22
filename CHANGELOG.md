@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 - 2026-08-22
+
+- Harden projection requests so row identity, required fields, raw transport keys, and field dependencies are always selected; ambiguous functional and path row keys now fail fast.
+- Preserve decimal and money precision in local comparison, filtering, sorting, and Ant Design rendering.
+- Validate and normalize built-in and custom filter value kinds, empty groups, JSON values, totals, rows, summary/facet elements, warnings, and cursor page metadata.
+- Remove controlled-query callback echoes and add independently cancellable, shared async option loading.
+- Harden Ant Design composition with safe protocol-node rendering, reactive standalone actions, explicit selection ownership, keyboard activation, accessible labels, pagination guards, and resize cleanup.
+- Add V8 coverage gates, immutable GitHub Actions, React 18/19 packed-consumer runtime rendering tests, modern TypeScript export checks, Vercel runtime pinning, and npm Trusted Publishing documentation.
+
 ## 0.1.0
 
 - Headless TypeScript core, React bindings, and Ant Design 6 renderer with independent package subpaths.

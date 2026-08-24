@@ -105,4 +105,6 @@ const instance = useGrid({ definition, source });
 - 独立使用 `GridActionButton` 时，按钮会订阅 query、selection 和当前 rows，`visible` / `disabled` 与默认 `GridActions` 保持一致。
 - `GridTable.selection` 由 Grid 持有选中 key；业务可以提供其他 AntD rowSelection 外观配置，并通过 `onSelect` / `onSelectAll` 观察事件，但不能从两个地方同时控制 selected keys。
 - 临时传给 `GridTable.columns`、但未注册在 definition 的展示列可以渲染；它们不会写入实例列状态。需要显隐、固定、拖动、宽度持久化或投影时，应把列注册进 definition，或给受控 `GridColumnPanel` 提供完整 column state。
+- 临时/业务列读取了 projection 之外的数据时，通过 `GridTable.requiredFields` 声明 definition 中的语义 field id；组件会在挂载期间把它们加入请求并在卸载时清理，Core 再按字段 `transport.selectKey/selectDependencies` 编译为传输 key。没有对应语义字段的原始 key 应声明在 `definition.projection.requiredKeys`。自定义 renderer 不使用 `GridTable` 时，可直接调用 `instance.projection.register(fieldIds)` 并执行返回的 cleanup；`getRequiredFields()` 可用于诊断当前合并结果。
+- 当 `GridFilterPanel` 只管理字段子集时，给并列的 `GridActiveFilters.fields` 传入同一字段集合。子集外条件会显示为只读，单项关闭和“清除”都只修改允许管理的条件，不会绕过租户、权限或页面固定筛选。
 - 行、可点击单元格和可编辑单元格支持 Enter / Space。自带链接、按钮、输入框等交互后代不会重复触发行或值点击。

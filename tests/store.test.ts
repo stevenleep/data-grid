@@ -613,7 +613,7 @@ describe('grid store', () => {
     grid.destroy();
   });
 
-  it('creates collision-proof action keys for action ids and typed row keys', () => {
+  it('creates collision-proof action keys and canonicalizes React-equivalent row keys', () => {
     interface KeyRow {
       id: string | number;
       name: string;
@@ -629,7 +629,7 @@ describe('grid store', () => {
     expect(grid.actions.key('a:b', { id: 'c', name: '' })).not.toBe(
       grid.actions.key('a', { id: 'b:c', name: '' }),
     );
-    expect(grid.actions.key('a', { id: 1, name: '' })).not.toBe(
+    expect(grid.actions.key('a', { id: 1, name: '' })).toBe(
       grid.actions.key('a', { id: '1', name: '' }),
     );
     grid.destroy();
@@ -696,6 +696,69 @@ describe('grid store', () => {
     await starting;
     expect(grid.getState().query.keyword).toBe('Two');
     expect(grid.getState().data.rows[0]?.name).toBe('Two');
+    grid.destroy();
+  });
+
+  it('returns to the construction preference baseline when persistence identity changes to empty', async () => {
+    const columns: GridColumnState = {
+      order: ['name'],
+      hidden: [],
+      widths: { name: 160 },
+      pinned: { name: null },
+      density: 'compact',
+    };
+    const activeView = {
+      id: 'tenant-a-view',
+      name: 'Tenant A',
+      query: {
+        keyword: 'tenant-a',
+        filters: { id: 'root', type: 'group' as const, logic: 'and' as const, children: [] },
+        sorts: [],
+      },
+      columns,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const tenantA: GridPersistedState = {
+      protocol: 'huiyun.data-grid/preferences/v1',
+      gridId: 'store-test',
+      revision: 1,
+      columns,
+      views: [activeView],
+      activeViewId: activeView.id,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const gridDefinition = definition();
+    const source = createLocalSource(rows);
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source,
+      defaultState: {
+        query: { keyword: 'baseline' },
+        columns: { density: 'comfortable' },
+      },
+      persistence: {
+        identity: 'tenant-a',
+        load: async () => tenantA,
+        save: async () => undefined,
+      },
+    });
+    await grid.start();
+    expect(grid.getState().query.keyword).toBe('tenant-a');
+    expect(grid.getState().views.activeId).toBe(activeView.id);
+
+    grid.updateOptions({
+      definition: gridDefinition,
+      source,
+      persistence: {
+        identity: 'tenant-b',
+        load: async () => null,
+        save: async () => undefined,
+      },
+    });
+    expect(grid.getState().query.keyword).toBe('baseline');
+    expect(grid.getState().columns.density).toBe('comfortable');
+    expect(grid.getState().views).toEqual({ activeId: undefined, items: [], dirty: false });
     grid.destroy();
   });
 
@@ -1040,7 +1103,7 @@ describe('grid store', () => {
     grid.destroy();
   });
 
-  it('reconciles a controlled query when source capabilities contract', async () => {
+  it('rejects a source capability contraction that would silently change the query', async () => {
     const gridDefinition = definition({
       fields: [
         { id: 'id', title: 'ID', filter: true, sort: true },
@@ -1084,6 +1147,7 @@ describe('grid store', () => {
       state: { query },
     });
     await grid.start();
+    const before = grid.getState();
     expect(() =>
       grid.updateOptions({
         definition: gridDefinition,
@@ -1102,12 +1166,44 @@ describe('grid store', () => {
         }),
         state: { query },
       }),
-    ).not.toThrow();
-    expect(grid.getState().query.keyword).toBe('');
-    expect(grid.getState().query.filters).toMatchObject({ logic: 'and', children: [] });
-    expect(grid.getState().query.sorts).toEqual([
-      { id: 'name-sort', fieldId: 'name', direction: 'asc', nulls: undefined },
-    ]);
+    ).toThrow('conflicts with the current grid source capabilities');
+    expect(grid.getState()).toBe(before);
+    expect(grid.capabilities.search).toBe(true);
+    grid.destroy();
+  });
+
+  it('rejects an incompatible view transactionally instead of applying a reduced query', async () => {
+    const incompatibleView = {
+      id: 'requires-search',
+      name: 'Requires search',
+      query: {
+        keyword: 'hidden',
+        filters: { id: 'root', type: 'group' as const, logic: 'and' as const, children: [] },
+        sorts: [],
+      },
+      columns: {
+        order: ['name'],
+        hidden: [],
+        widths: { name: 160 },
+        pinned: { name: null },
+        density: 'compact' as const,
+      },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource<Row>(async () => ({ rows: [] }), {
+        capabilities: { search: false },
+      }),
+      defaultState: { views: { items: [incompatibleView] } },
+    });
+    await grid.start();
+    const before = grid.getState();
+    expect(() => grid.views.apply(incompatibleView.id)).toThrow(
+      'conflicts with the current grid source capabilities',
+    );
+    expect(grid.getState()).toBe(before);
     grid.destroy();
   });
 
@@ -1137,6 +1233,776 @@ describe('grid store', () => {
     expect(() => grid.columns.setWidth('name', Number.NaN)).toThrow('finite');
     expect(() => grid.selection.toggle(1, rows[1]!)).toThrow('does not match');
     expect(() => grid.views.create(42 as never)).toThrow('string name');
+    expect(grid.getState()).toBe(before);
+    grid.destroy();
+  });
+
+  it('masks stale controlled data and controlled results across dataset boundaries', async () => {
+    const staleResult = { rows: [{ id: 1, name: 'Tenant A' }], total: { value: 1 } };
+    const controlled = createGrid<Row>({
+      definition: definition(),
+      source: createControlledSource({ datasetKey: 'tenant-a', result: staleResult }),
+    });
+    await controlled.start();
+    controlled.updateOptions({
+      definition: definition(),
+      source: createControlledSource({ datasetKey: 'tenant-b', result: staleResult }),
+    });
+    expect(controlled.getState().data.rows).toEqual([]);
+    controlled.updateOptions({
+      definition: definition(),
+      source: createControlledSource({
+        datasetKey: 'tenant-b',
+        result: { rows: [{ id: 2, name: 'Tenant B' }], total: { value: 1 } },
+      }),
+    });
+    expect(controlled.getState().data.rows[0]?.name).toBe('Tenant B');
+    controlled.destroy();
+
+    const tenantBRead = deferred<GridReadResult<Row>>();
+    const tenantCRead = deferred<GridReadResult<Row>>();
+    const staleData: GridState<Row>['data'] = {
+      status: 'success',
+      fetching: false,
+      rows: staleResult.rows,
+      total: staleResult.total,
+      summary: [],
+      facets: {},
+      warnings: [],
+    };
+    const firstRead = vi.fn(async () => staleResult);
+    const secondRead = vi.fn(() => tenantBRead.promise);
+    const thirdRead = vi.fn(() => tenantCRead.promise);
+    const stateControlled = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource(firstRead, { datasetKey: 'tenant-a' }),
+      state: { data: staleData },
+    });
+    await stateControlled.start();
+    stateControlled.updateOptions({
+      definition: definition(),
+      source: createRemoteSource(secondRead, { datasetKey: 'tenant-b' }),
+      state: { data: staleData },
+    });
+    expect(stateControlled.getState().data.rows).toEqual([]);
+    expect(stateControlled.getState().data.fetching).toBe(true);
+    stateControlled.updateOptions({
+      definition: definition(),
+      source: createRemoteSource(thirdRead, { datasetKey: 'tenant-c' }),
+      state: { data: staleData },
+    });
+    expect(stateControlled.getState().data.rows).toEqual([]);
+    tenantBRead.resolve({ rows: [{ id: 2, name: 'Late Tenant B' }], total: { value: 1 } });
+    tenantCRead.resolve({ rows: [{ id: 3, name: 'Tenant C' }], total: { value: 1 } });
+    await vi.waitFor(() => expect(stateControlled.getState().data.rows[0]?.name).toBe('Tenant C'));
+    stateControlled.destroy();
+  });
+
+  it('keeps entity-controlled slices masked across A to B to C until their references change', async () => {
+    const save = vi.fn(async () => undefined);
+    const onStateChange = vi.fn();
+    const gridDefinition = definition({ editing: { save, reloadOnSave: false } });
+    const tenantAState: Partial<GridState<Row>> = {
+      selection: { mode: 'explicit', selectedKeys: [1] },
+      editing: {
+        active: {
+          rowKey: 1,
+          fieldId: 'name',
+          previousValue: 'Tenant A',
+          draft: 'Tenant A draft',
+        },
+        saving: false,
+      },
+      actions: { pending: { 'tenant-a-action': true }, errors: { 'tenant-a-action': 'old' } },
+    };
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source: createControlledSource({
+        datasetKey: 'tenant-a',
+        result: { rows: [{ id: 1, name: 'Tenant A' }] },
+      }),
+      state: tenantAState,
+      onStateChange,
+    });
+    await grid.start();
+    onStateChange.mockClear();
+
+    const updateDataset = (datasetKey: string, name: string, state = tenantAState) =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source: createControlledSource({
+          datasetKey,
+          result: { rows: [{ id: 1, name }] },
+        }),
+        state,
+        onStateChange,
+      });
+    updateDataset('tenant-b', 'Tenant B');
+    const resetCalls = onStateChange.mock.calls.filter(
+      (call) => call[1]?.type === 'dataset.controlled.reset',
+    );
+    expect(resetCalls).toHaveLength(1);
+    expect(resetCalls[0]?.[0]).toMatchObject({
+      selection: { mode: 'explicit', selectedKeys: [] },
+      editing: { saving: false },
+      actions: { pending: { 'tenant-a-action': false }, errors: {} },
+    });
+    expect(grid.getState()).toMatchObject({
+      selection: { mode: 'explicit', selectedKeys: [] },
+      editing: { saving: false },
+      actions: { pending: { 'tenant-a-action': false }, errors: {} },
+    });
+    expect(grid.selection.getSelectedRows()).toEqual([]);
+
+    updateDataset('tenant-c', 'Tenant C');
+    expect(grid.getState().selection).toEqual({ mode: 'explicit', selectedKeys: [] });
+    expect(grid.getState().editing.active).toBeUndefined();
+    expect(grid.getState().actions).toEqual({
+      pending: { 'tenant-a-action': false },
+      errors: {},
+    });
+
+    updateDataset('tenant-c', 'Tenant C', {
+      selection: { mode: 'explicit', selectedKeys: [1] },
+      editing: {
+        active: {
+          rowKey: 1,
+          fieldId: 'name',
+          previousValue: 'Tenant C',
+          draft: 'Tenant C acknowledged',
+        },
+        saving: false,
+      },
+      actions: { pending: {}, errors: {} },
+    });
+    expect(grid.getState().selection).toEqual({ mode: 'explicit', selectedKeys: [1] });
+    expect(grid.getState().editing.active?.draft).toBe('Tenant C acknowledged');
+    grid.destroy();
+  });
+
+  it('joins concurrent starts and normalizes loading state when stopped', async () => {
+    const request = deferred<GridReadResult<Row>>();
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource(() => request.promise),
+    });
+    const first = grid.start();
+    const second = grid.start();
+    expect(second).toBe(first);
+    await vi.waitFor(() => expect(grid.getState().data.status).toBe('loading'));
+    grid.stop();
+    expect(grid.getState().data).toMatchObject({ status: 'idle', fetching: false });
+    request.resolve({ rows: [rows[0]!] });
+    await Promise.all([first, second]);
+    grid.destroy();
+  });
+
+  it('deduplicates controlled actions with an in-flight controller', async () => {
+    const request = deferred<void>();
+    const run = vi.fn(() => request.promise);
+    const controlledActions: GridState<Row>['actions'] = { pending: {}, errors: {} };
+    const grid = createGrid<Row>({
+      definition: definition({
+        actions: [{ id: 'sync', label: 'Sync', placement: 'toolbar', run }],
+      }),
+      source: createLocalSource(rows),
+      state: { actions: controlledActions },
+    });
+    await grid.start();
+    const first = grid.actions.run('sync');
+    const second = grid.actions.run('sync');
+    expect(run).toHaveBeenCalledOnce();
+    request.resolve();
+    await Promise.all([first, second]);
+    grid.destroy();
+  });
+
+  it('requires an identity to hot-swap functional row-key callbacks safely', () => {
+    const source = createLocalSource(rows);
+    const identified = (rowKey: (row: Row) => number) =>
+      definition({ rowKey, rowKeyIdentity: 'id-v1' });
+    const grid = createGrid<Row>({ definition: identified((row) => row.id), source });
+    expect(() =>
+      grid.updateOptions({ definition: identified((row) => row.id), source }),
+    ).not.toThrow();
+    expect(grid.definition.getRowKey(rows[0]!)).toBe(1);
+    grid.destroy();
+
+    const unsafe = createGrid<Row>({
+      definition: definition({ rowKey: (row) => row.id }),
+      source,
+    });
+    expect(() =>
+      unsafe.updateOptions({
+        definition: definition({ rowKey: (row) => row.id }),
+        source,
+      }),
+    ).toThrow('functional grid rowKey');
+    unsafe.destroy();
+  });
+
+  it('serializes reentrant notifications and isolates every observer failure', () => {
+    const order: string[] = [];
+    const eventStates: string[] = [];
+    const onError = vi.fn(() => order.push('error'));
+    const onStateChange = vi.fn((state: GridState<Row>) => {
+      order.push(`state:${state.query.keyword}`);
+      throw new Error('state observer');
+    });
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createLocalSource(rows),
+      onError,
+      onStateChange,
+    });
+    let nested = false;
+    grid.subscribe(() => {
+      order.push('listener:first');
+      if (!nested) {
+        nested = true;
+        grid.query.setKeyword('inner');
+      }
+    });
+    const throwingListener = vi.fn(() => {
+      order.push('listener:throw');
+      throw new Error('listener observer');
+    });
+    grid.subscribe(throwingListener);
+    grid.subscribeEvent((event, state) => {
+      order.push(`event:${event.type}`);
+      eventStates.push(state.query.keyword);
+    });
+
+    expect(() => grid.query.setKeyword('outer')).not.toThrow();
+    expect(throwingListener).toHaveBeenCalledTimes(2);
+    expect(onStateChange).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(4);
+    expect(order.filter((item) => item === 'event:query.keyword')).toHaveLength(2);
+    expect(order.indexOf('state:outer')).toBeLessThan(order.indexOf('state:inner'));
+    expect(eventStates).toEqual(['outer', 'inner']);
+    grid.destroy();
+  });
+
+  it('delivers each queued event to the onStateChange observer captured by its commit', () => {
+    const firstObserver = vi.fn();
+    const replacementObserver = vi.fn();
+    const gridDefinition = definition();
+    const source = createLocalSource(rows);
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source,
+      onStateChange: firstObserver,
+    });
+    let replaced = false;
+    grid.subscribe(() => {
+      if (replaced) return;
+      replaced = true;
+      grid.updateOptions({
+        definition: gridDefinition,
+        source,
+        onStateChange: replacementObserver,
+      });
+    });
+
+    grid.query.setKeyword('snapshot');
+    expect(firstObserver).toHaveBeenCalledOnce();
+    expect(firstObserver.mock.calls[0]?.[0].query.keyword).toBe('snapshot');
+    expect(replacementObserver).not.toHaveBeenCalled();
+    grid.destroy();
+  });
+
+  it('clears editing when a controlled result removes the active row and keeps case-sensitive option requests distinct', async () => {
+    const load = vi.fn(async ({ search }: { search: string }) => [
+      { label: search, value: search },
+    ]);
+    const grid = createGrid<Row>({
+      definition: definition({
+        fields: [{ id: 'name', title: 'Name', edit: true, options: { load } }],
+        editing: { reloadOnSave: false, save: async () => undefined },
+      }),
+      source: createControlledSource({
+        datasetKey: 'editing-result',
+        result: { rows: [rows[0]!] },
+      }),
+    });
+    await grid.start();
+    grid.editing.begin(rows[0]!, 'name');
+    expect(grid.getState().editing.active?.rowKey).toBe(1);
+    grid.updateOptions({
+      definition: definition({
+        fields: [{ id: 'name', title: 'Name', edit: true, options: { load } }],
+        editing: { reloadOnSave: false, save: async () => undefined },
+      }),
+      source: createControlledSource({
+        datasetKey: 'editing-result',
+        result: { rows: [rows[1]!] },
+      }),
+    });
+    expect(grid.getState().editing.active).toBeUndefined();
+
+    await expect(grid.options.load('name', 'US')).resolves.toEqual([{ label: 'US', value: 'US' }]);
+    await expect(grid.options.load('name', 'us')).resolves.toEqual([{ label: 'us', value: 'us' }]);
+    expect(load).toHaveBeenCalledTimes(2);
+    grid.destroy();
+  });
+
+  it('canonicalizes grouped column order and rejects interleaved controlled state', () => {
+    interface GroupRow {
+      id: number;
+      a: string;
+      b: string;
+      c: string;
+      d: string;
+    }
+    const groupedDefinition: GridDefinition<GroupRow> = {
+      id: 'grouped-columns',
+      rowKey: 'id',
+      fields: ['a', 'b', 'c', 'd'].map((id) => ({ id, title: id })),
+      columns: [
+        {
+          id: 'first',
+          children: [
+            { id: 'a', fieldId: 'a' },
+            { id: 'b', fieldId: 'b' },
+          ],
+        },
+        {
+          id: 'second',
+          children: [
+            { id: 'c', fieldId: 'c' },
+            { id: 'd', fieldId: 'd' },
+          ],
+        },
+      ],
+    };
+    const grid = createGrid<GroupRow>({
+      definition: groupedDefinition,
+      source: createLocalSource([]),
+    });
+    grid.columns.setOrder(['a', 'c', 'b', 'd']);
+    expect(grid.getState().columns.order).toEqual(['a', 'b', 'c', 'd']);
+    const interleaved = { ...grid.getState().columns, order: ['a', 'c', 'b', 'd'] };
+    expect(() =>
+      grid.updateOptions({
+        definition: groupedDefinition,
+        source: createLocalSource([]),
+        state: { columns: interleaved },
+      }),
+    ).toThrow('cannot interleave');
+    expect(grid.getState().columns.order).toEqual(['a', 'b', 'c', 'd']);
+    grid.destroy();
+  });
+
+  it('flushes debounced persistence deterministically and remains safe during destroy', async () => {
+    vi.useFakeTimers();
+    try {
+      const request = deferred<void>();
+      const save = vi.fn(() => request.promise);
+      const grid = createGrid<Row>({
+        definition: definition(),
+        source: createLocalSource(rows),
+        persistence: { identity: 'flush-test', load: async () => null, save },
+      });
+      await grid.start();
+      grid.views.create('Flush me');
+      const flushing = grid.flushPersistence();
+      await Promise.resolve();
+      expect(save).toHaveBeenCalledOnce();
+      grid.destroy();
+      request.resolve();
+      await expect(flushing).resolves.toBeUndefined();
+      expect(save).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reference-counts runtime projection requirements without changing selection scope', async () => {
+    interface ProjectionRow {
+      id: number;
+      name: string;
+      secret: string;
+    }
+    const selects: string[][] = [];
+    const read = vi.fn(async ({ request }: { request: { select?: string[] } }) => {
+      selects.push(request.select || []);
+      return { rows: [{ id: 1, name: 'One', secret: 'S' }], total: { value: 1 } };
+    });
+    const grid = createGrid<ProjectionRow>({
+      definition: {
+        id: 'runtime-projection',
+        rowKey: 'id',
+        fields: [
+          { id: 'name', title: 'Name' },
+          { id: 'secret', title: 'Secret', column: false },
+        ],
+      },
+      source: createRemoteSource(read, { capabilities: { projection: true } }),
+    });
+    await grid.start();
+    grid.selection.selectPage();
+    expect(selects.at(-1)).not.toContain('secret');
+
+    const firstCleanup = grid.projection.register(['secret']);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(selects.at(-1)).toContain('secret');
+    expect(grid.getState().selection).toEqual({ mode: 'explicit', selectedKeys: [1] });
+
+    const secondCleanup = grid.projection.register(['secret']);
+    firstCleanup();
+    await Promise.resolve();
+    expect(read).toHaveBeenCalledTimes(2);
+    secondCleanup();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    expect(selects.at(-1)).not.toContain('secret');
+    expect(grid.getState().selection).toEqual({ mode: 'explicit', selectedKeys: [1] });
+    grid.destroy();
+  });
+
+  it('notifies a controlled source when enabling projection changes the request', async () => {
+    interface ProjectionRow {
+      id: number;
+      name: string;
+      secret: string;
+    }
+    const gridDefinition: GridDefinition<ProjectionRow> = {
+      id: 'controlled-projection-capability',
+      rowKey: 'id',
+      fields: [
+        { id: 'name', title: 'Name' },
+        { id: 'secret', title: 'Secret', column: false },
+      ],
+    };
+    const result = { rows: [{ id: 1, name: 'One', secret: 'S' }] };
+    const onQueryChange = vi.fn();
+    const grid = createGrid<ProjectionRow>({
+      definition: gridDefinition,
+      source: createControlledSource({ datasetKey: 'projection', result, onQueryChange }),
+    });
+    await grid.start();
+    onQueryChange.mockClear();
+    grid.projection.register(['secret']);
+
+    grid.updateOptions({
+      definition: gridDefinition,
+      source: createControlledSource({
+        datasetKey: 'projection',
+        result,
+        onQueryChange,
+        capabilities: { projection: true },
+      }),
+    });
+    expect(onQueryChange).toHaveBeenCalledOnce();
+    expect(onQueryChange.mock.calls[0]?.[1].select).toEqual(
+      expect.arrayContaining(['name', 'secret']),
+    );
+    grid.destroy();
+  });
+
+  it('publishes runtime-only definition and projection changes without changing grid state', () => {
+    const firstDefinition = definition({ fields: [{ id: 'name', title: 'First' }] });
+    const secondDefinition = definition({ fields: [{ id: 'name', title: 'Second' }] });
+    const source = createLocalSource(rows);
+    const onStateChange = vi.fn();
+    const grid = createGrid<Row>({ definition: firstDefinition, source, onStateChange });
+    const runtime = grid as typeof grid & {
+      getRuntimeRevision: () => number;
+      subscribeRuntime: (listener: () => void) => () => void;
+    };
+    const stateListener = vi.fn();
+    const runtimeListener = vi.fn();
+    grid.subscribe(stateListener);
+    runtime.subscribeRuntime(runtimeListener);
+    const before = grid.getState();
+
+    grid.updateOptions({ definition: secondDefinition, source, onStateChange });
+    expect(runtime.getRuntimeRevision()).toBe(1);
+    expect(runtimeListener).toHaveBeenCalledOnce();
+    expect(grid.getState()).toMatchObject(before);
+    expect(grid.getState().query).toBe(before.query);
+    expect(grid.getState().columns).toBe(before.columns);
+    expect(grid.getState().data).toBe(before.data);
+    expect(stateListener).not.toHaveBeenCalled();
+    expect(onStateChange).not.toHaveBeenCalled();
+
+    grid.updateOptions({ definition: secondDefinition, source, onStateChange });
+    expect(runtime.getRuntimeRevision()).toBe(1);
+    const firstCleanup = grid.projection.register(['name']);
+    expect(runtime.getRuntimeRevision()).toBe(2);
+    const secondCleanup = grid.projection.register(['name']);
+    expect(runtime.getRuntimeRevision()).toBe(2);
+    firstCleanup();
+    expect(runtime.getRuntimeRevision()).toBe(2);
+    secondCleanup();
+    expect(runtime.getRuntimeRevision()).toBe(3);
+    secondCleanup();
+    expect(runtime.getRuntimeRevision()).toBe(3);
+    grid.destroy();
+  });
+
+  it('corrects an offset page after an exact total shrinks despite stale pageInfo', async () => {
+    const read = vi.fn(async ({ query }: { query: GridQuery }) => {
+      const page = query.pagination.type === 'offset' ? query.pagination.page : 1;
+      if (page > 2) {
+        return {
+          rows: [],
+          total: { value: 2, accuracy: 'exact' as const },
+          pageInfo: { hasPrevious: false, hasNext: false },
+        };
+      }
+      return {
+        rows: [rows[page - 1]!],
+        total: { value: 2, accuracy: 'exact' as const },
+        pageInfo: { hasPrevious: page > 1, hasNext: page < 2 },
+      };
+    });
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource(read),
+    });
+    await grid.start();
+    grid.query.setPage(4);
+    await vi.waitFor(() =>
+      expect(grid.getState().query.pagination).toEqual({ type: 'offset', page: 2, pageSize: 1 }),
+    );
+    await vi.waitFor(() => expect(grid.getState().data.rows[0]?.id).toBe(2));
+    expect(grid.getState().data.error).toBeUndefined();
+    grid.destroy();
+  });
+
+  it('does not let a late persistence hydrate overwrite user preferences changed meanwhile', async () => {
+    const loading = deferred<GridPersistedState | null>();
+    const columns: GridColumnState = {
+      order: ['name'],
+      hidden: [],
+      widths: { name: 160 },
+      pinned: { name: null },
+      density: 'compact',
+    };
+    const persisted: GridPersistedState = {
+      protocol: 'huiyun.data-grid/preferences/v1',
+      gridId: 'store-test',
+      revision: 1,
+      columns,
+      views: [
+        {
+          id: 'saved',
+          name: 'Saved',
+          query: {
+            keyword: 'persisted',
+            filters: { id: 'root', type: 'group', logic: 'and', children: [] },
+            sorts: [],
+          },
+          columns,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      activeViewId: 'saved',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createLocalSource(rows),
+      persistence: { load: () => loading.promise, save: async () => undefined },
+    });
+    const starting = grid.start();
+    grid.query.setKeyword('user input');
+    grid.columns.setDensity('comfortable');
+    loading.resolve(persisted);
+    await starting;
+    expect(grid.getState().query.keyword).toBe('user input');
+    expect(grid.getState().columns.density).toBe('comfortable');
+    expect(grid.getState().views.items[0]?.id).toBe('saved');
+    expect(grid.getState().views.activeId).toBeUndefined();
+    grid.destroy();
+  });
+
+  it('keeps an active view dirty when a late hydrate arrives after query changes', async () => {
+    const loading = deferred<GridPersistedState | null>();
+    const columns: GridColumnState = {
+      order: ['name'],
+      hidden: [],
+      widths: { name: 160 },
+      pinned: { name: null },
+      density: 'compact',
+    };
+    const activeView = {
+      id: 'active',
+      name: 'Active',
+      query: {
+        keyword: 'saved',
+        filters: { id: 'root', type: 'group' as const, logic: 'and' as const, children: [] },
+        sorts: [],
+      },
+      columns,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const persisted: GridPersistedState = {
+      protocol: 'huiyun.data-grid/preferences/v1',
+      gridId: 'store-test',
+      revision: 1,
+      columns,
+      views: [activeView],
+      activeViewId: activeView.id,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createLocalSource(rows),
+      defaultState: {
+        query: { keyword: 'already-dirty' },
+        views: { activeId: activeView.id, items: [activeView], dirty: true },
+      },
+      persistence: { load: () => loading.promise, save: async () => undefined },
+    });
+    const starting = grid.start();
+    grid.query.setKeyword('changed while loading');
+    loading.resolve(persisted);
+    await starting;
+    expect(grid.getState().views.activeId).toBe(activeView.id);
+    expect(grid.getState().views.dirty).toBe(true);
+    expect(grid.getState().query.keyword).toBe('changed while loading');
+    grid.destroy();
+  });
+
+  it('reconciles an active persisted view against current source capabilities', async () => {
+    const columns: GridColumnState = {
+      order: ['name'],
+      hidden: [],
+      widths: { name: 160 },
+      pinned: { name: null },
+      density: 'compact',
+    };
+    const persisted: GridPersistedState = {
+      protocol: 'huiyun.data-grid/preferences/v1',
+      gridId: 'store-test',
+      revision: 1,
+      columns,
+      views: [
+        {
+          id: 'broad-query',
+          name: 'Broad query',
+          query: {
+            keyword: 'hidden search',
+            filters: {
+              id: 'root',
+              type: 'group',
+              logic: 'and',
+              children: [
+                {
+                  id: 'contains',
+                  type: 'condition',
+                  fieldId: 'name',
+                  operator: 'contains',
+                  value: 'One',
+                },
+              ],
+            },
+            sorts: [],
+          },
+          columns: { ...columns, density: 'comfortable' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      activeViewId: 'broad-query',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource<Row>(async () => ({ rows: [] }), {
+        capabilities: { search: false, filter: { operators: ['equals'] } },
+      }),
+      defaultState: {
+        query: {
+          filters: {
+            id: 'root',
+            type: 'group',
+            logic: 'and',
+            children: [
+              {
+                id: 'old-equals',
+                type: 'condition',
+                fieldId: 'name',
+                operator: 'equals',
+                value: 'Old',
+              },
+            ],
+          },
+        },
+      },
+      persistence: { load: async () => persisted, save: async () => undefined },
+    });
+    await grid.start();
+    expect(grid.getState().views.activeId).toBeUndefined();
+    expect(grid.getState().query.keyword).toBe('');
+    expect(grid.getState().query.filters.children).toEqual([]);
+    expect(grid.getState().columns.density).toBe('compact');
+    expect(grid.getState().views.items[0]?.columns.density).toBe('comfortable');
+    grid.destroy();
+  });
+
+  it('rejects malformed editing, action, data and query slices transactionally', async () => {
+    const gridDefinition = definition();
+    const source = createLocalSource(rows);
+    const grid = createGrid<Row>({ definition: gridDefinition, source });
+    await grid.start();
+    const before = grid.getState();
+    expect(() =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source,
+        state: { actions: { pending: { invalid: 'yes' }, errors: {} } as never },
+      }),
+    ).toThrow('action state protocol');
+    expect(() =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source,
+        state: {
+          editing: {
+            saving: false,
+            active: { rowKey: 1, fieldId: 'missing', previousValue: '', draft: '' },
+          },
+        },
+      }),
+    ).toThrow('editable field');
+    expect(() =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source,
+        state: { data: { ...before.data, rows: [rows[0]!, { ...rows[0]! }] } },
+      }),
+    ).toThrow('duplicate row key');
+    expect(() =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source: createRemoteSource<Row>(async () => ({ rows: [] }), {
+          capabilities: { filter: { logic: 'and' } },
+        }),
+        state: {
+          query: {
+            ...before.query,
+            filters: {
+              id: 'root',
+              type: 'group',
+              logic: 'and',
+              children: [
+                {
+                  id: 'typo',
+                  type: 'condition',
+                  fieldId: 'naem',
+                  operator: 'equals',
+                  value: 'One',
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).toThrow('not filterable');
     expect(grid.getState()).toBe(before);
     grid.destroy();
   });

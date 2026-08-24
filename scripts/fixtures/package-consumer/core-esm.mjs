@@ -1,5 +1,21 @@
 import assert from 'node:assert/strict';
-import { createGrid, createLocalSource, defineGrid } from '@huiyun/data-grid/core';
+import * as core from '@huiyun/data-grid/core';
+
+const { createGrid, createLocalSource, defineGrid } = core;
+for (const implementationSymbol of [
+  'GridStore',
+  'definitionSignature',
+  'isResolvedGridDefinition',
+  'cloneJson',
+  'createGridId',
+  'normalizeError',
+]) {
+  assert.equal(
+    implementationSymbol in core,
+    false,
+    `${implementationSymbol} leaked through the public Core runtime entry`,
+  );
+}
 
 const definition = defineGrid({
   id: 'core-esm-consumer',

@@ -5,14 +5,15 @@ import {
   PlusOutlined,
   SortAscendingOutlined,
 } from '@ant-design/icons';
-import { Button, Divider, Popover, Select, Space } from 'antd';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { createGridId, type GridResolvedField, type GridSort } from '../core';
+import { Alert, Button, Divider, Popover, Select, Space } from 'antd';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { type GridResolvedCapabilities, type GridResolvedField, type GridSort } from '../core';
+import { createGridId } from '../core/model';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useControllableOpen } from './hooks';
 import { resolveGridLocale } from './locale';
-import { renderGridNode } from './render';
+import { gridNodeText, renderGridNode } from './render';
 
 function supportsNullPlacement<Row extends object>(
   field: GridResolvedField<Row> | undefined,
@@ -21,21 +22,35 @@ function supportsNullPlacement<Row extends object>(
   return Boolean(sourceSupportsNulls && field?.sort && field.sort.nulls !== false);
 }
 
+function sortCapabilityConflict<Row extends object>(
+  sorts: GridSort[],
+  fields: readonly GridResolvedField<Row>[],
+  capabilities: GridResolvedCapabilities['sort'],
+): boolean {
+  if (sorts.length > capabilities.max) return true;
+  const fieldMap = new Map(fields.map((field) => [field.id, field]));
+  const seen = new Set<string>();
+  const ids = new Set<string>();
+  return sorts.some((sort) => {
+    const field = fieldMap.get(sort.fieldId);
+    if (!sort.id || ids.has(sort.id) || !field?.sort || seen.has(sort.fieldId)) return true;
+    ids.add(sort.id);
+    seen.add(sort.fieldId);
+    return false;
+  });
+}
+
 function normalizeSortNulls<Row extends object>(
   sorts: GridSort[],
   fields: readonly GridResolvedField<Row>[],
   sourceSupportsNulls: boolean,
-  maximum = Number.MAX_SAFE_INTEGER,
 ): GridSort[] {
   const fieldMap = new Map(fields.map((field) => [field.id, field]));
-  const seen = new Set<string>();
-  return sorts.flatMap((sort) => {
+  return sorts.map((sort) => {
     const field = fieldMap.get(sort.fieldId);
-    if (!field?.sort || seen.has(sort.fieldId) || seen.size >= maximum) return [];
-    seen.add(sort.fieldId);
-    if (supportsNullPlacement(field, sourceSupportsNulls)) return [sort];
+    if (!sort.nulls || supportsNullPlacement(field, sourceSupportsNulls)) return sort;
     const { nulls: _nulls, ...rest } = sort;
-    return [rest];
+    return rest;
   });
 }
 
@@ -55,7 +70,7 @@ export function GridSortBuilder<Row extends object>({
   const locale = resolveGridLocale(ui.locale, ui.language);
   const fields = useMemo(
     () => (supplied || instance.definition.fields).filter((field) => field.sort),
-    [instance, supplied],
+    [instance, instance.definition.fields, supplied],
   );
   const maximum = instance.capabilities.sort.max;
   const available = fields.find((field) => !value.some((sort) => sort.fieldId === field.id));
@@ -72,17 +87,32 @@ export function GridSortBuilder<Row extends object>({
     <div className="hui-grid__sort-rules">
       {value.map((sort, index) => {
         const field = instance.definition.fieldMap.get(sort.fieldId);
+        const title = field ? renderGridNode(field.title) : sort.fieldId;
+        const titleText = field ? gridNodeText(field.title) || field.id : sort.fieldId;
+        const readOnly = !fields.some((item) => item.id === sort.fieldId);
+        const previousReadOnly =
+          index > 0 && !fields.some((item) => item.id === value[index - 1]?.fieldId);
+        const nextReadOnly =
+          index < value.length - 1 && !fields.some((item) => item.id === value[index + 1]?.fieldId);
         return (
           <div className="hui-grid__sort-rule" key={sort.id}>
             <Select
               size="small"
               value={sort.fieldId}
-              options={fields.map((item) => ({
-                label: renderGridNode(item.title),
-                value: item.id,
-                disabled:
-                  item.id !== sort.fieldId && value.some((current) => current.fieldId === item.id),
-              }))}
+              disabled={readOnly}
+              aria-label={`${locale.fields} ${index + 1}`}
+              options={[
+                ...(!fields.some((item) => item.id === sort.fieldId)
+                  ? [{ label: title, value: sort.fieldId, disabled: true }]
+                  : []),
+                ...fields.map((item) => ({
+                  label: renderGridNode(item.title),
+                  value: item.id,
+                  disabled:
+                    item.id !== sort.fieldId &&
+                    value.some((current) => current.fieldId === item.id),
+                })),
+              ]}
               onChange={(fieldId) => {
                 const nextField = fields.find((item) => item.id === fieldId);
                 onChange(
@@ -100,6 +130,8 @@ export function GridSortBuilder<Row extends object>({
             <Select
               size="small"
               value={sort.direction}
+              disabled={readOnly}
+              aria-label={`${titleText}: ${locale.sorts}`}
               options={[
                 { label: locale.sortAscending, value: 'asc' },
                 { label: locale.sortDescending, value: 'desc' },
@@ -112,10 +144,14 @@ export function GridSortBuilder<Row extends object>({
                 )
               }
             />
-            {supportsNullPlacement(field, instance.capabilities.sort.nulls) && (
+            {(sort.nulls || supportsNullPlacement(field, instance.capabilities.sort.nulls)) && (
               <Select
                 size="small"
-                value={sort.nulls || 'last'}
+                value={sort.nulls}
+                allowClear
+                disabled={readOnly}
+                placeholder={locale.defaultNullPlacement}
+                aria-label={`${titleText}: ${locale.nullsLast}/${locale.nullsFirst}`}
                 options={[
                   { label: locale.nullsLast, value: 'last' },
                   { label: locale.nullsFirst, value: 'first' },
@@ -133,16 +169,16 @@ export function GridSortBuilder<Row extends object>({
               <Button
                 size="small"
                 type="text"
-                disabled={!index}
-                aria-label={locale.moveUp}
+                disabled={readOnly || !index || previousReadOnly}
+                aria-label={`${locale.moveUp}: ${titleText}`}
                 icon={<ArrowUpOutlined />}
                 onClick={() => move(index, index - 1)}
               />
               <Button
                 size="small"
                 type="text"
-                disabled={index === value.length - 1}
-                aria-label={locale.moveDown}
+                disabled={readOnly || index === value.length - 1 || nextReadOnly}
+                aria-label={`${locale.moveDown}: ${titleText}`}
                 icon={<ArrowDownOutlined />}
                 onClick={() => move(index, index + 1)}
               />
@@ -150,7 +186,8 @@ export function GridSortBuilder<Row extends object>({
                 size="small"
                 type="text"
                 danger
-                aria-label={locale.remove}
+                disabled={readOnly}
+                aria-label={`${locale.remove}: ${titleText}`}
                 icon={<CloseOutlined />}
                 onClick={() => onChange(value.filter((_, currentIndex) => currentIndex !== index))}
               />
@@ -202,37 +239,39 @@ export function GridSortPanel<Row extends object>({
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
-  const availableFields = fields || instance.definition.fields.filter((field) => field.sort);
+  const allSortFields = instance.definition.fields.filter((field) => field.sort);
+  const conflict = sortCapabilityConflict(value, allSortFields, instance.capabilities.sort);
   return (
     <div className="hui-grid__panel hui-grid__sort-panel">
       <GridSortBuilder value={value} onChange={onChange} fields={fields} />
-      <Divider />
-      <div className="hui-grid__panel-footer">
-        {onCancel && (
-          <Button size="small" onClick={onCancel}>
-            {locale.cancel}
-          </Button>
-        )}
-        <Button size="small" onClick={onClear}>
-          {locale.clear}
-        </Button>
-        <Button
-          size="small"
-          type="primary"
-          onClick={() =>
-            onApply?.(
-              normalizeSortNulls(
-                value,
-                availableFields,
-                instance.capabilities.sort.nulls,
-                instance.capabilities.sort.max,
-              ),
-            )
-          }
-        >
-          {locale.apply}
-        </Button>
-      </div>
+      {conflict && <Alert type="error" showIcon title={locale.sortCapabilityConflict} />}
+      {(onCancel || onClear || onApply) && <Divider />}
+      {(onCancel || onClear || onApply) && (
+        <div className="hui-grid__panel-footer">
+          {onCancel && (
+            <Button size="small" onClick={onCancel}>
+              {locale.cancel}
+            </Button>
+          )}
+          {onClear && (
+            <Button size="small" onClick={onClear}>
+              {locale.clear}
+            </Button>
+          )}
+          {onApply && (
+            <Button
+              size="small"
+              type="primary"
+              disabled={conflict}
+              onClick={() =>
+                onApply(normalizeSortNulls(value, allSortFields, instance.capabilities.sort.nulls))
+              }
+            >
+              {locale.apply}
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -258,14 +297,21 @@ export function GridSortTrigger<Row extends object>({
   const sorts = useGridSelector<Row, GridSort[]>((state) => state.query.sorts);
   const [open, setOpen] = useControllableOpen(controlled, defaultOpen, onOpenChange);
   const [draft, setDraft] = useState(() => sorts.map((sort) => ({ ...sort })));
+  const draftDirtyRef = useRef(false);
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) setDraft(sorts.map((sort) => ({ ...sort })));
+    const opening = open && !wasOpenRef.current;
+    if (!open || opening || !draftDirtyRef.current) {
+      setDraft(sorts.map((sort) => ({ ...sort })));
+    }
+    if (!open) draftDirtyRef.current = false;
+    wasOpenRef.current = open;
   }, [open, sorts]);
 
   const button =
     typeof trigger === 'function'
       ? trigger({ open, count: sorts.length })
-      : trigger || (
+      : (trigger ?? (
           <Button
             size="small"
             type={sorts.length ? 'default' : 'text'}
@@ -274,7 +320,7 @@ export function GridSortTrigger<Row extends object>({
             {locale.sorts}
             {sorts.length ? ` ${sorts.length}` : ''}
           </Button>
-        );
+        ));
   return (
     <Popover
       open={open}
@@ -285,14 +331,22 @@ export function GridSortTrigger<Row extends object>({
       content={
         <GridSortPanel
           value={draft}
-          onChange={setDraft}
-          onCancel={() => setOpen(false)}
+          onChange={(value) => {
+            draftDirtyRef.current = true;
+            setDraft(value);
+          }}
+          onCancel={() => {
+            draftDirtyRef.current = false;
+            setOpen(false);
+          }}
           onClear={() => {
+            draftDirtyRef.current = false;
             setDraft([]);
             instance.query.setSorts([], 'user');
             setOpen(false);
           }}
           onApply={(value) => {
+            draftDirtyRef.current = false;
             instance.query.setSorts(value, 'user');
             setOpen(false);
           }}

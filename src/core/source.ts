@@ -417,13 +417,18 @@ export function normalizeGridResult<Row extends object>(
     (total.accuracy === undefined || total.accuracy === 'exact') &&
     pageInfo
   ) {
-    const expectedPrevious = pagination.page > 1;
-    const expectedNext = pagination.page * pagination.pageSize < total.value;
-    if (pageInfo.hasPrevious !== undefined && pageInfo.hasPrevious !== expectedPrevious) {
-      throw new Error('Grid pageInfo.hasPrevious is inconsistent with the exact total.');
-    }
-    if (pageInfo.hasNext !== undefined && pageInfo.hasNext !== expectedNext) {
-      throw new Error('Grid pageInfo.hasNext is inconsistent with the exact total.');
+    const lastPage = Math.max(1, Math.ceil(total.value / pagination.pageSize));
+    // An empty result for an offset that became stale is valid; the store uses the
+    // exact total to move back to lastPage before rendering this pageInfo.
+    if (pagination.page <= lastPage) {
+      const expectedPrevious = pagination.page > 1;
+      const expectedNext = pagination.page * pagination.pageSize < total.value;
+      if (pageInfo.hasPrevious !== undefined && pageInfo.hasPrevious !== expectedPrevious) {
+        throw new Error('Grid pageInfo.hasPrevious is inconsistent with the exact total.');
+      }
+      if (pageInfo.hasNext !== undefined && pageInfo.hasNext !== expectedNext) {
+        throw new Error('Grid pageInfo.hasNext is inconsistent with the exact total.');
+      }
     }
   }
   return {

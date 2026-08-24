@@ -19,6 +19,7 @@ import type {
   GridRowKey,
   GridRuntime,
   GridSchema,
+  GridValueTypeRegistry,
   GridValueTypeDefinition,
 } from './types';
 import { getFilterOperatorValueKind, getPathValue, isEmptyValue, stableStringify } from './model';
@@ -204,7 +205,7 @@ function compareUnknown(left: unknown, right: unknown): number {
   });
 }
 
-export const builtinValueTypes: Record<string, GridValueTypeDefinition<object>> = {
+export const builtinValueTypes: GridValueTypeRegistry<object> = {
   text: {
     defaultColumn: { width: 160, align: 'left' },
     operators: textOperators,
@@ -336,8 +337,20 @@ export function defineGridFields<Row extends object>(
   return fields;
 }
 
+export function defineGridValueType<Row extends object, Value>(
+  valueType: GridValueTypeDefinition<Row, Value>,
+): GridValueTypeDefinition<Row, Value> {
+  return valueType;
+}
+
 export function createFieldHelper<Row extends object>() {
   return {
+    property<Key extends Extract<keyof Row, string>>(
+      key: Key,
+      options: Omit<GridFieldDefinition<Row, Row[Key]>, 'id' | 'path' | 'accessor'>,
+    ): GridFieldDefinition<Row, Row[Key]> {
+      return { ...options, id: key, path: [key] };
+    },
     accessor<Value>(
       id: string,
       accessor: (row: Row) => Value,
@@ -398,7 +411,7 @@ function checkedOperatorValueKinds(
 
 function resolveField<Row extends object>(
   field: GridAnyFieldDefinition<Row>,
-  valueTypes: Record<string, GridValueTypeDefinition<Row>>,
+  valueTypes: GridValueTypeRegistry<Row>,
 ): GridAnyResolvedField<Row> {
   const valueType = field.valueType || 'text';
   const type = valueTypes[valueType];
@@ -499,7 +512,7 @@ function resolveColumn<Row extends object>(
   column: GridColumnDefinition<Row>,
   fieldMap: ReadonlyMap<string, GridAnyResolvedField<Row>>,
   fieldDefinitions: ReadonlyMap<string, GridAnyFieldDefinition<Row>>,
-  valueTypes: Record<string, GridValueTypeDefinition<Row>>,
+  valueTypes: GridValueTypeRegistry<Row>,
 ): GridResolvedColumn<Row> {
   if (column.fieldId && column.children?.length) {
     throw new Error(`Column "${column.id}" cannot reference a field and contain child columns.`);
@@ -632,6 +645,16 @@ function validateResolvedDefinition<Row extends object>(
   if (!Array.isArray(definition.fields) || !Array.isArray(definition.columns)) {
     throw new Error('Resolved grid definition fields and columns must be arrays.');
   }
+  if (
+    definition.rowKeyIdentity !== undefined &&
+    !(
+      (typeof definition.rowKeyIdentity === 'string' && definition.rowKeyIdentity.trim()) ||
+      (typeof definition.rowKeyIdentity === 'number' &&
+        Number.isSafeInteger(definition.rowKeyIdentity))
+    )
+  ) {
+    throw new Error('Resolved grid definition has an invalid rowKeyIdentity.');
+  }
   const fieldIds = new Set<string>();
   definition.fields.forEach((field) => {
     if (
@@ -652,6 +675,10 @@ function validateResolvedDefinition<Row extends object>(
     ) {
       throw new Error('Resolved grid definition contains an invalid field or fieldMap entry.');
     }
+    validateSchemaFieldFeatures(
+      field as unknown as Record<string, unknown>,
+      `Grid field "${field.id}"`,
+    );
     fieldIds.add(field.id);
   });
   if (definition.fieldMap.size !== fieldIds.size) {
@@ -739,6 +766,16 @@ export function resolveGridDefinition<Row extends object>(
     throw new Error('Grid definition requires a valid rowKey.');
   }
   if (Array.isArray(definition.rowKey)) validatePath(definition.rowKey, 'Grid rowKey');
+  if (
+    definition.rowKeyIdentity !== undefined &&
+    !(
+      (typeof definition.rowKeyIdentity === 'string' && definition.rowKeyIdentity.trim()) ||
+      (typeof definition.rowKeyIdentity === 'number' &&
+        Number.isSafeInteger(definition.rowKeyIdentity))
+    )
+  ) {
+    throw new Error('Grid rowKeyIdentity must be a non-empty string or safe integer.');
+  }
   const defaults = definition.defaults as GridDefinition<Row>['defaults'];
   if (
     defaults?.pageSize !== undefined &&
@@ -758,8 +795,8 @@ export function resolveGridDefinition<Row extends object>(
     }
   }
 
-  const valueTypes: Record<string, GridValueTypeDefinition<Row>> = {
-    ...(builtinValueTypes as unknown as Record<string, GridValueTypeDefinition<Row>>),
+  const valueTypes: GridValueTypeRegistry<Row> = {
+    ...(builtinValueTypes as unknown as GridValueTypeRegistry<Row>),
     ...definition.valueTypes,
   };
   Object.entries(definition.valueTypes || {}).forEach(([id, valueType]) => {
@@ -1233,10 +1270,17 @@ function validateSchemaFieldFeatures(field: Record<string, unknown>, label: stri
 
   validateSchemaFeature(field.edit, `${label}.edit`);
   if (isPlainRecord(field.edit)) {
-    for (const property of ['enabled', 'required'] as const) {
+    for (const property of ['enabled', 'required', 'multiple'] as const) {
       if (field.edit[property] !== undefined && typeof field.edit[property] !== 'boolean') {
         throw new Error(`${label}.edit.${property} must be a boolean.`);
       }
+    }
+    if (
+      field.edit.numericMode !== undefined &&
+      field.edit.numericMode !== 'number' &&
+      field.edit.numericMode !== 'string'
+    ) {
+      throw new Error(`${label}.edit.numericMode must be number or string.`);
     }
     for (const property of ['editor', 'placeholder'] as const) {
       if (field.edit[property] !== undefined && typeof field.edit[property] !== 'string') {
@@ -1533,7 +1577,7 @@ export function definitionSignature<Row extends object>(
     revision: definition.revision,
     rowKey:
       typeof definition.rowKey === 'function'
-        ? { type: 'function' }
+        ? { type: 'function', identity: definition.rowKeyIdentity }
         : { type: 'path', value: definition.rowKey },
     fields: definition.fields.map((field) => ({
       id: field.id,

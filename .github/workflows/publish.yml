@@ -17,7 +17,7 @@ jobs:
     name: Verify and package release
     if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     permissions:
       contents: read
     outputs:
@@ -52,6 +52,9 @@ jobs:
       - name: Verify release identity
         id: release
         run: node scripts/verify-release.mjs "$GITHUB_REF_NAME" "$GITHUB_OUTPUT"
+
+      - name: Install Chromium for the release consumer gate
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Run the complete release gate
         run: pnpm release:check

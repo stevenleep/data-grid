@@ -20,13 +20,36 @@ import type {
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { resolveGridLocale } from './locale';
-import { gridNodeText, renderGridNode } from './render';
+import { gridNodeText, renderGridNode, safeGridText } from './render';
+import { useGridSelectionCount, useResolvedGridSelectionMode } from './selection-mode';
 
-const rowIndexes = new WeakMap<readonly object[], Map<GridRowKey, object>>();
+const rowIndexes = new WeakMap<readonly object[], Map<string, object>>();
 const selectedRowIndexes = new WeakMap<
   object,
   { selection: unknown; rows: unknown; value: readonly object[] }
 >();
+const emptySelectedRows: readonly object[] = [];
+
+function actionUsesRenderContext<Row extends object>(action: GridAction<Row>): boolean {
+  return Boolean(
+    typeof action.visible === 'function' ||
+    typeof action.disabled === 'function' ||
+    typeof action.confirm === 'function' ||
+    action.getConfirmation,
+  );
+}
+
+function hasConfirmation(content: unknown): boolean {
+  return content !== undefined && content !== null && content !== false;
+}
+
+function confirmationFor<Row extends object>(
+  action: GridAction<Row>,
+  context: Omit<GridActionContext<Row>, 'signal'>,
+): unknown {
+  if (action.getConfirmation) return action.getConfirmation(context);
+  return typeof action.confirm === 'function' ? action.confirm(context) : action.confirm;
+}
 
 function currentRowFrom<Row extends object>(
   rows: readonly Row[],
@@ -34,12 +57,12 @@ function currentRowFrom<Row extends object>(
   getRowKey: (row: Row) => GridRowKey,
 ): Row | undefined {
   if (key === undefined) return undefined;
-  let index = rowIndexes.get(rows) as Map<GridRowKey, Row> | undefined;
+  let index = rowIndexes.get(rows) as Map<string, Row> | undefined;
   if (!index) {
-    index = new Map(rows.map((item) => [getRowKey(item), item]));
-    rowIndexes.set(rows, index as Map<GridRowKey, object>);
+    index = new Map(rows.map((item) => [String(getRowKey(item)), item]));
+    rowIndexes.set(rows, index as Map<string, object>);
   }
-  return index.get(key);
+  return index.get(String(key));
 }
 
 function selectedRowsFrom<Row extends object>(
@@ -78,16 +101,20 @@ function actionStateEqual<Row extends object>(
     loading: boolean;
     error?: string;
     query: unknown;
+    columns: unknown;
     selection: unknown;
     selectedRows: unknown;
+    data: unknown;
     row?: Row;
   },
   right: {
     loading: boolean;
     error?: string;
     query: unknown;
+    columns: unknown;
     selection: unknown;
     selectedRows: unknown;
+    data: unknown;
     row?: Row;
   },
 ) {
@@ -95,8 +122,10 @@ function actionStateEqual<Row extends object>(
     left.loading === right.loading &&
     left.error === right.error &&
     left.query === right.query &&
+    left.columns === right.columns &&
     left.selection === right.selection &&
     left.selectedRows === right.selectedRows &&
+    left.data === right.data &&
     left.row === right.row
   );
 }
@@ -129,23 +158,32 @@ export function GridActionButton<Row extends object>({
   const instance = useGridInstance<Row>();
   const key = instance.actions.key(action.id, row);
   const rowKey = row ? instance.definition.getRowKey(row) : undefined;
+  // A custom renderer owns arbitrary UI and may close over state-derived action semantics.
+  // Prefer correctness unless it opts into the built-in static button path.
+  const usesRenderContext = Boolean(render) || actionUsesRenderContext(action);
   const state = useGridSelector<
     Row,
     {
       loading: boolean;
       error?: string;
       query: unknown;
+      columns: unknown;
       selection: unknown;
       selectedRows: readonly Row[];
+      data: unknown;
       row?: Row;
     }
   >(
     (current) => ({
       loading: Boolean(current.actions.pending[key]),
       error: current.actions.errors[key],
-      query: current.query,
-      selection: current.selection,
-      selectedRows: selectedRowsFrom(instance, current.selection, current.data.rows),
+      query: usesRenderContext ? current.query : undefined,
+      columns: usesRenderContext ? current.columns : undefined,
+      selection: usesRenderContext ? current.selection : undefined,
+      selectedRows: usesRenderContext
+        ? selectedRowsFrom(instance, current.selection, current.data.rows)
+        : (emptySelectedRows as readonly Row[]),
+      data: usesRenderContext ? current.data : undefined,
       row: currentRowFrom(current.data.rows, rowKey, instance.definition.getRowKey),
     }),
     actionStateEqual,
@@ -175,14 +213,8 @@ export function GridActionButton<Row extends object>({
     });
   }
 
-  const content = action.getConfirmation
-    ? action.getConfirmation(context)
-    : action.confirm
-      ? typeof action.confirm === 'function'
-        ? action.confirm(context)
-        : action.confirm
-      : undefined;
-  const requiresConfirmation = content !== undefined && content !== null && content !== false;
+  const content = confirmationFor(action, context);
+  const requiresConfirmation = hasConfirmation(content);
   const button = (
     <Button
       {...buttonProps}
@@ -236,38 +268,47 @@ export function GridActions<Row extends object>({
   className,
 }: GridActionsProps<Row>) {
   const instance = useGridInstance<Row>();
-  const { modal } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
   const rowKey = row ? instance.definition.getRowKey(row) : undefined;
-  const state = useGridSelector<
-    Row,
-    {
-      query: ReturnType<typeof instance.getState>['query'];
-      selection: ReturnType<typeof instance.getState>['selection'];
-      selectedRows: readonly Row[];
-      row?: Row;
-    }
-  >(
-    (current) => ({
-      query: current.query,
-      selection: current.selection,
-      selectedRows: selectedRowsFrom(instance, current.selection, current.data.rows),
-      row: currentRowFrom(current.data.rows, rowKey, instance.definition.getRowKey),
-    }),
-    (left, right) =>
-      left.query === right.query &&
-      left.selection === right.selection &&
-      left.selectedRows === right.selectedRows &&
-      left.row === right.row,
-  );
-  const currentRow = state.row || row;
-  const baseContext = instance.actions.getContext(currentRow, field, value);
   const candidates = actions
     ? [...actions]
     : (instance.definition.actions || [])
         .filter((action) => (action.placement || 'toolbar') === placement)
         .sort((left, right) => (left.order || 0) - (right.order || 0));
+  const usesRenderContext = candidates.some(actionUsesRenderContext);
+  const state = useGridSelector<
+    Row,
+    {
+      query: unknown;
+      columns: unknown;
+      selection: unknown;
+      selectedRows: readonly Row[];
+      data: unknown;
+      row?: Row;
+    }
+  >(
+    (current) => ({
+      query: usesRenderContext ? current.query : undefined,
+      columns: usesRenderContext ? current.columns : undefined,
+      selection: usesRenderContext ? current.selection : undefined,
+      selectedRows: usesRenderContext
+        ? selectedRowsFrom(instance, current.selection, current.data.rows)
+        : (emptySelectedRows as readonly Row[]),
+      data: usesRenderContext ? current.data : undefined,
+      row: currentRowFrom(current.data.rows, rowKey, instance.definition.getRowKey),
+    }),
+    (left, right) =>
+      left.query === right.query &&
+      left.columns === right.columns &&
+      left.selection === right.selection &&
+      left.selectedRows === right.selectedRows &&
+      left.data === right.data &&
+      left.row === right.row,
+  );
+  const currentRow = state.row || row;
+  const baseContext = instance.actions.getContext(currentRow, field, value);
   const resolved = candidates.filter((action) =>
     typeof action.visible === 'function' ? action.visible(baseContext) : action.visible !== false,
   );
@@ -299,13 +340,15 @@ export function GridActions<Row extends object>({
           disabled,
           onClick: () => {
             const run = () =>
-              instance.actions.run(action, { row: currentRow, field, value }).catch(() => {});
-            const confirm = action.getConfirmation
-              ? action.getConfirmation(baseContext)
-              : typeof action.confirm === 'function'
-                ? action.confirm(baseContext)
-                : action.confirm;
-            if (confirm) {
+              instance.actions.run(action, { row: currentRow, field, value }).catch((reason) => {
+                void message.error(
+                  reason instanceof Error
+                    ? reason.message
+                    : safeGridText(reason, locale.saveFailed),
+                );
+              });
+            const confirm = confirmationFor(action, baseContext);
+            if (hasConfirmation(confirm)) {
               modal.confirm({
                 title: renderGridNode(confirm),
                 okButtonProps: { danger: action.intent === 'danger' },
@@ -315,7 +358,18 @@ export function GridActions<Row extends object>({
           },
         };
       }),
-    [baseContext, currentRow, field, instance, modal, overflow, pending, value],
+    [
+      baseContext,
+      currentRow,
+      field,
+      instance,
+      locale.saveFailed,
+      message,
+      modal,
+      overflow,
+      pending,
+      value,
+    ],
   );
   if (!resolved.length) return null;
   return (
@@ -354,24 +408,33 @@ export function GridActions<Row extends object>({
 
 export interface GridSelectionBarProps {
   children?: ReactNode;
+  actions?: boolean;
 }
 
-export function GridSelectionBar<Row extends object>({ children }: GridSelectionBarProps = {}) {
+export function GridSelectionBar<Row extends object>({
+  children,
+  actions = true,
+}: GridSelectionBarProps = {}) {
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
-  const selection = useGridSelector<Row, ReturnType<typeof instance.getState>['selection']>(
-    (state) => state.selection,
+  const configuredSelection = ui.selection ?? instance.definition.defaults?.selection;
+  const configuredSelectionProps =
+    typeof configuredSelection === 'object' ? configuredSelection : undefined;
+  const selectionMode = useResolvedGridSelectionMode(
+    instance,
+    configuredSelection
+      ? configuredSelectionProps?.type === 'radio'
+        ? 'radio'
+        : 'checkbox'
+      : undefined,
   );
-  const count =
-    selection.mode === 'explicit'
-      ? selection.selectedKeys.length
-      : Math.max(0, selection.total - selection.excludedKeys.length);
+  const count = useGridSelectionCount(instance, selectionMode);
   if (!count) return null;
   return (
     <div className="hui-grid__selection-bar">
       <span>{locale.selected(count)}</span>
-      {children || <GridActions<Row> placement="bulk" />}
+      {children ?? (actions ? <GridActions<Row> placement="bulk" /> : null)}
       <Button size="small" type="text" onClick={instance.selection.clear}>
         {locale.cancel}
       </Button>

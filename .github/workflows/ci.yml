@@ -72,26 +72,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build package
-        run: pnpm build
-
       - name: Validate tarball contents, metadata, and exports
         run: pnpm package:inspect
 
   consumers:
     name: Consumer smoke / ${{ matrix.label }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
           - label: Core only / Node 20 minimum
             node: '20.19.0'
-            arguments: --profile=core-only
+            arguments: --profile=core-min
           - label: Core only / Node 26 current
             node: '26'
-            arguments: --profile=core-only
+            arguments: --profile=core-current
           - label: React 18 + AntD 6 + TS 5.4 minimum
             node: '20.19.0'
             arguments: --profile=react18-min
@@ -104,6 +101,16 @@ jobs:
           - label: React 19 + TS 7 current + packed Vite
             node: '24'
             arguments: --profile=react19-current --with-vite
+          - label: Core only / npm tarball install
+            node: '24'
+            arguments: --profile=core-min --manager=npm
+          - label: React 19 / npm tarball + packed Vite
+            node: '24'
+            arguments: --profile=react19-current --with-vite --manager=npm
+          - label: React 19 / packed Vite + Chromium
+            node: '24'
+            arguments: --profile=react19-current --with-vite --with-browser
+            browser: true
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -123,6 +130,10 @@ jobs:
 
       - name: Build package
         run: pnpm build
+
+      - name: Install Chromium for the real-browser consumer
+        if: ${{ matrix.browser == true }}
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Install and test packed consumer
         run: pnpm consumer:smoke -- ${{ matrix.arguments }}

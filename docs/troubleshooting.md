@@ -9,6 +9,8 @@
 3. Controlled source 是否在 `onQueryChange` 中触发外部查询。
 4. 是否错误地在外层缓存了旧 request。
 
+Remote source 未设置 `datasetKey` 时，`read` 函数引用变化会被视为数据集切换；如果 source 在 render 内创建，请稳定 reader 引用或显式设置数据集键。
+
 需要强制刷新时调用 `instance.data.reload()`；需要清除当前请求缓存再刷新时调用 `instance.data.invalidate()`。
 
 ## 筛选 UI 可选但后端不支持
@@ -71,9 +73,17 @@ pnpm add react react-dom antd @ant-design/icons
 
 `@huiyun/data-grid/core`、`/react` 和 `/antd` 使用现代 `exports`。TypeScript 应配置 `moduleResolution: "Bundler"`、`"Node16"` 或 `"NodeNext"`；旧的 `"node"` 不在支持范围内。不要只添加路径别名掩盖运行时同样无法解析的问题。
 
-## Core-only 项目找不到 `Storage` 或 `AbortSignal`
+## Core-only 项目需要 DOM lib
 
-Core 没有 DOM 运行时依赖，但公共类型使用取消与可选本地存储的标准平台协议。纯服务 TypeScript 项目可在 `tsconfig.json` 的 `compilerOptions.lib` 中加入 `"DOM"`，或提供等价的 ambient `Storage`/`AbortSignal` 类型；这不会把浏览器代码引入 Node 运行时。
+Core 的本地持久化使用最小 `GridStorageLike`，不要求 DOM `Storage`。取消仍采用标准 `AbortSignal`：Node 服务项目应安装匹配运行时的 `@types/node`，浏览器/Worker 项目由 `DOM` 或 `WebWorker` lib 提供。CI 会在 TypeScript 5.4、`skipLibCheck: false`、仅 `ES2022` lib 加 Node typings 的配置验证；如果仍出现 `Storage`、`Window` 等 DOM 全局，先确认导入的是 `@huiyun/data-grid/core` 且没有把根入口或 `/react` 带入服务端文件，然后用真实 tarball 复现并报告声明路径。
+
+## Next.js 提示 hooks 只能在 Client Component 使用
+
+根入口、`/react` 和 `/antd` 的发布产物带 `"use client"`；`/core` 不带。业务页面同时使用自身 hooks、路由或浏览器 API 时，仍应在最外层业务组件声明 `"use client"`，并从 Server Component 只传可序列化 props。不要从未公开的 `dist` chunk 或 `src` 深层路径导入，否则会绕开该边界。
+
+## 日期、时区或列宽交互在旧浏览器异常
+
+支持基线是 ES2020、`AbortController`、`ResizeObserver`、Pointer Events 和提供 IANA 时区数据的现代 `Intl`。受控企业浏览器或精简 ICU 运行时应在应用入口补齐相应 polyfill/时区数据，并用自身支持矩阵验证。仓库 Chromium smoke 证明当前 evergreen Chromium 路径，不代表所有旧版浏览器。
 
 ## AntD 上下文告警
 
@@ -89,4 +99,4 @@ AntD 6 公开声明支持 React 18，但其当前声明及部分 rc-component �
 pnpm release:check
 ```
 
-检查范围包括格式、类型、测试与覆盖率、ESM/CJS/声明构建、Demo 构建与 gzip 预算、导出映射、npm tarball 内容、Core-only 安装以及 React 18/19 与 Vite 真实消费项目。完整流程见[维护与发布](./releasing.md)。
+检查范围包括格式、类型、测试与覆盖率、ESM/CJS/声明构建、四入口 API report、Demo 构建与 gzip 预算、导出映射、pnpm/npm tarball 安装、无 DOM/UI peers 的 Core、React 18/19 客户端与 hydration，以及 packed Vite 的 Chromium 执行。完整流程见[维护与发布](./releasing.md)。

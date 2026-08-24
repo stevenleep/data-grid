@@ -2,16 +2,19 @@
 
 ## 环境要求
 
-- Node.js `>=20.19.0 <27`
+- Node.js `>=20.19.0`
 - React 与 React DOM 18/19，两者主版本一致
 - Ant Design 与 Ant Design Icons 6
 - TypeScript 5.4–7.x 推荐但不是运行时必需
+- 支持 ES2020、`AbortController`、`ResizeObserver`、Pointer Events 和现代 `Intl`/IANA 时区的 evergreen 浏览器
 
 ```bash
 pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons
 ```
 
 React、React DOM、Ant Design 和图标包都是 optional peer dependencies；使用默认 DataGrid 时需要由应用显式安装，从而避免包替业务项目决定 UI 版本。只用 `@huiyun/data-grid/core` 时可以只安装 `@huiyun/data-grid`，不需要任何 UI peer。
+
+根入口、`/react` 和 `/antd` 自带 `"use client"` 边界，`/core` 不带该指令。Next.js App Router 中可以从服务端模块使用 `/core`；直接组合 DataGrid、业务 hooks 或浏览器 API 的应用组件仍应声明 `"use client"`。
 
 在应用入口导入一次样式：
 
@@ -35,7 +38,44 @@ interface Order {
 ## 定义表格协议
 
 ```tsx
-import { defineGrid } from '@huiyun/data-grid';
+import { createFieldHelper, defineGrid } from '@huiyun/data-grid';
+
+const field = createFieldHelper<Order>();
+const fields = [
+  field.property('orderNo', {
+    title: '订单号',
+    filter: true,
+    sort: true,
+    column: { width: 160, fixed: 'left' },
+  }),
+  field.property('customer', {
+    title: '客户',
+    valueType: 'relation',
+    searchText: (value) => value.name,
+    transport: { filterKey: 'customer_id' },
+    filter: true,
+    options: customerOptions,
+  }),
+  field.property('amount', {
+    title: '金额',
+    valueType: 'money',
+    filter: true,
+    sort: true,
+    meta: { currency: 'CNY' },
+  }),
+  field.property('status', {
+    title: '状态',
+    valueType: 'status',
+    filter: true,
+    options: statusOptions,
+  }),
+  field.property('createdAt', {
+    title: '创建时间',
+    valueType: 'dateTime',
+    filter: true,
+    sort: true,
+  }),
+];
 
 export const orderGrid = defineGrid<Order>({
   id: 'admin-orders',
@@ -47,51 +87,11 @@ export const orderGrid = defineGrid<Order>({
     selection: true,
     views: true,
   },
-  fields: [
-    {
-      id: 'orderNo',
-      title: '订单号',
-      filter: true,
-      sort: true,
-      column: { width: 160, fixed: 'left' },
-    },
-    {
-      id: 'customer',
-      title: '客户',
-      valueType: 'relation',
-      accessor: (row) => row.customer,
-      searchText: (value) => value.name,
-      transport: { filterKey: 'customer_id' },
-      filter: true,
-      options: customerOptions,
-    },
-    {
-      id: 'amount',
-      title: '金额',
-      valueType: 'money',
-      filter: true,
-      sort: true,
-      meta: { currency: 'CNY' },
-    },
-    {
-      id: 'status',
-      title: '状态',
-      valueType: 'status',
-      filter: true,
-      options: statusOptions,
-    },
-    {
-      id: 'createdAt',
-      title: '创建时间',
-      valueType: 'dateTime',
-      filter: true,
-      sort: true,
-    },
-  ],
+  fields,
 });
 ```
 
-字段默认会生成同名展示列。只有需要分组表头、纯展示列或一个字段多种展示时，才需要显式声明 `columns`。
+字段默认会生成同名展示列。`createFieldHelper<Order>()` 让 `property` 的 value callback 保留 `Order[Key]`，让 `accessor` 的返回类型贯穿 codec、搜索和 renderer；不要在有 value callback 的异构 inline fields 数组里依赖 `any`。只有需要分组表头、纯展示列或一个字段多种展示时，才需要显式声明 `columns`。
 
 ## 接入服务端数据
 

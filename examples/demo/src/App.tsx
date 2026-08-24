@@ -35,6 +35,7 @@ import {
   GridTotal,
   GridViewTrigger,
   applyLocalGridQuery,
+  createFieldHelper,
   createLocalGridPersistence,
   createRemoteSource,
   defineGrid,
@@ -78,6 +79,7 @@ const riskOptions = [
 const ownerOptions = demoOwners.map(({ id, name }) => ({ label: name, value: id }));
 const customerOptions = demoCustomers.map(({ id, name }) => ({ label: name, value: id }));
 const tagOptions = demoTags.map((value) => ({ label: value, value }));
+const orderField = createFieldHelper<DemoOrder>();
 
 interface DetailState {
   order: DemoOrder;
@@ -265,36 +267,31 @@ export function DemoApp() {
         views: true,
       },
       fields: [
-        {
-          id: 'orderNo',
+        orderField.property('orderNo', {
           title: '订单号',
           filter: true,
           sort: true,
           column: { width: 150, fixed: 'left', minWidth: 120 },
-        },
-        {
-          id: 'customer',
+        }),
+        orderField.property('customer', {
           title: '客户',
           valueType: 'relation',
           filter: true,
           transport: { filterKey: 'customer_id' },
-          accessor: (row) => row.customer,
           searchText: (value) => value.name,
           options: customerOptions,
           filterPredicate: matchEntityId,
           column: { width: 160 },
-        },
-        {
-          id: 'amount',
+        }),
+        orderField.property('amount', {
           title: '订单金额',
           valueType: 'money',
           filter: true,
           sort: true,
           meta: { currency: 'CNY' },
           column: { width: 140 },
-        },
-        {
-          id: 'status',
+        }),
+        orderField.property('status', {
           title: '状态',
           valueType: 'status',
           filter: true,
@@ -302,49 +299,43 @@ export function DemoApp() {
           edit: { enabled: true, required: true },
           options: statusOptions,
           column: { width: 120 },
-        },
-        {
-          id: 'risk',
+        }),
+        orderField.property('risk', {
           title: '风险',
           valueType: 'status',
           filter: true,
           options: riskOptions,
           column: { width: 108 },
-        },
-        {
-          id: 'owner',
+        }),
+        orderField.property('owner', {
           title: '负责人',
           valueType: 'user',
           filter: true,
-          accessor: (row) => row.owner,
           transport: { filterKey: 'owner_id' },
           options: ownerOptions,
           filterPredicate: matchEntityId,
           column: { width: 126 },
-        },
-        {
-          id: 'tags',
+        }),
+        orderField.property('tags', {
           title: '标签',
           valueType: 'multiSelect',
           filter: true,
           options: tagOptions,
           column: { width: 160 },
-        },
-        {
-          id: 'paid',
+        }),
+        orderField.property('paid', {
           title: '已支付',
           valueType: 'boolean',
           filter: true,
           column: { width: 92, align: 'center' },
-        },
-        {
-          id: 'createdAt',
+        }),
+        orderField.property('createdAt', {
           title: '创建时间',
           valueType: 'dateTime',
           filter: true,
           sort: true,
           column: { width: 176 },
-        },
+        }),
       ],
       columns: [
         {

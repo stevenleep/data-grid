@@ -73,6 +73,9 @@ export const zhCN: GridLocale = {
   falseLabel: '否',
   invalidJson: '请输入有效的 JSON',
   renderFailed: '内容渲染失败',
+  filterCapabilityConflict: '当前筛选条件与数据源能力不兼容，请调整后再应用',
+  sortCapabilityConflict: '当前排序规则与数据源能力不兼容，请调整后再应用',
+  defaultNullPlacement: '默认空值顺序',
 };
 
 export const enUS: GridLocale = {
@@ -147,6 +150,11 @@ export const enUS: GridLocale = {
   falseLabel: 'False',
   invalidJson: 'Enter valid JSON',
   renderFailed: 'Unable to render content',
+  filterCapabilityConflict:
+    'The current filters exceed the data source capabilities. Adjust them before applying.',
+  sortCapabilityConflict:
+    'The current sorts exceed the data source capabilities. Adjust them before applying.',
+  defaultNullPlacement: 'Default null placement',
 };
 
 export function resolveGridLocale(locale?: Partial<GridLocale>, language?: string): GridLocale {

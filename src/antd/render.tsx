@@ -69,22 +69,18 @@ export function gridNodeText(value: unknown): string {
 export interface GridRenderErrorBoundaryProps {
   children: ReactNode;
   resetKey?: unknown;
-  fallback: ReactNode | ((error: Error) => ReactNode);
+  fallback: ReactNode | ((error: Error, reset: () => void) => ReactNode);
   onError?: (error: Error, info: ErrorInfo) => void;
-}
-
-interface GridRenderErrorBoundaryState {
-  error?: Error;
 }
 
 /** Isolates client-side renderer failures. React does not support error boundaries during SSR. */
 export class GridRenderErrorBoundary extends Component<
   GridRenderErrorBoundaryProps,
-  GridRenderErrorBoundaryState
+  { error?: Error }
 > {
-  state: GridRenderErrorBoundaryState = {};
+  state: { error?: Error } = {};
 
-  static getDerivedStateFromError(error: unknown): GridRenderErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): { error?: Error } {
     return {
       error: error instanceof Error ? error : new Error(safeGridText(error, 'Render failed')),
     };
@@ -100,11 +96,13 @@ export class GridRenderErrorBoundary extends Component<
     }
   }
 
+  reset = () => this.setState({ error: undefined });
+
   render() {
     const { error } = this.state;
     if (error) {
       return typeof this.props.fallback === 'function'
-        ? this.props.fallback(error)
+        ? this.props.fallback(error, this.reset)
         : this.props.fallback;
     }
     return this.props.children;

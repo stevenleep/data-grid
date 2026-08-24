@@ -9,16 +9,22 @@ import {
 import { Alert, Card, Col, Row, Space, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
 
-const quickStart = `import { DataGrid, createRemoteSource, defineGrid } from '@huiyun/data-grid';
+const quickStart = `import {
+  DataGrid,
+  createFieldHelper,
+  createRemoteSource,
+  defineGrid,
+} from '@huiyun/data-grid';
 import '@huiyun/data-grid/style.css';
 
+const field = createFieldHelper<Order>();
 const definition = defineGrid<Order>({
   id: 'orders',
   rowKey: 'id',
   fields: [
-    { id: 'orderNo', title: '订单号', filter: true, sort: true },
-    { id: 'amount', title: '金额', valueType: 'money', sort: true },
-    { id: 'status', title: '状态', valueType: 'status', filter: true },
+    field.property('orderNo', { title: '订单号', filter: true, sort: true }),
+    field.property('amount', { title: '金额', valueType: 'money', sort: true }),
+    field.property('status', { title: '状态', valueType: 'status', filter: true }),
   ],
 });
 

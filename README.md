@@ -41,7 +41,8 @@ README 只保留概览和核心示例。完整接入说明位于 [docs/README.md
 - React DOM 18/19，与 React 主版本一致
 - Ant Design 6 与 Ant Design Icons 6（使用 AntD 层时）
 - TypeScript 5.4–7.x（类型消费时）
-- Node.js `>=20.19.0 <27`（仓库 CI 与 Vercel Demo 固定使用 Node.js 24）
+- Node.js `>=20.19.0`（仓库 CI 与 Vercel Demo 固定使用 Node.js 24）
+- 浏览器需支持 ES2020、`AbortController`、`ResizeObserver`、Pointer Events，以及带 IANA 时区数据的现代 `Intl`
 
 ```bash
 pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons
@@ -62,6 +63,8 @@ import { compileGridQuery, createGrid } from '@huiyun/data-grid/core';
 ```ts
 import '@huiyun/data-grid/style.css';
 ```
+
+根入口、`/react` 和 `/antd` 已发布为 React Client Component 边界；`/core` 保持 server-safe。Next.js App Router 页面如果还直接使用业务 hooks、浏览器 API 或交互状态，页面自己的组合组件仍应声明 `"use client"`。
 
 ## 交互 Demo
 
@@ -93,7 +96,7 @@ pnpm demo
 ## 快速开始
 
 ```tsx
-import { DataGrid, createRemoteSource, defineGrid } from '@huiyun/data-grid';
+import { DataGrid, createFieldHelper, createRemoteSource, defineGrid } from '@huiyun/data-grid';
 
 interface Order {
   id: string;
@@ -103,6 +106,52 @@ interface Order {
   status: 'pending' | 'completed';
   createdAt: string;
 }
+
+const field = createFieldHelper<Order>();
+const fields = [
+  field.property('orderNo', {
+    title: '订单号',
+    filter: true,
+    sort: true,
+    column: { width: 160, fixed: 'left' },
+  }),
+  field.property('customer', {
+    title: '客户',
+    valueType: 'relation',
+    transport: { filterKey: 'customer_id', selectKey: 'customer' },
+    filter: true,
+    options: {
+      dependsOn: ['status'],
+      cacheTime: 60_000,
+      load: async ({ search, signal }) => {
+        const items = await searchCustomers(search, signal);
+        return items.map((item) => ({ label: item.name, value: item.id }));
+      },
+    },
+  }),
+  field.property('amount', {
+    title: '金额',
+    valueType: 'money',
+    meta: { currency: 'CNY' },
+    filter: true,
+    sort: true,
+  }),
+  field.property('status', {
+    title: '状态',
+    valueType: 'status',
+    filter: true,
+    options: [
+      { label: '待处理', value: 'pending', color: 'gold' },
+      { label: '已完成', value: 'completed', color: 'green' },
+    ],
+  }),
+  field.property('createdAt', {
+    title: '创建时间',
+    valueType: 'dateTime',
+    filter: true,
+    sort: true,
+  }),
+];
 
 const definition = defineGrid<Order>({
   id: 'orders',
@@ -114,58 +163,7 @@ const definition = defineGrid<Order>({
     selection: true,
     views: true,
   },
-  fields: [
-    {
-      id: 'orderNo',
-      title: '订单号',
-      path: ['orderNo'],
-      filter: true,
-      sort: true,
-      column: { width: 160, fixed: 'left' },
-    },
-    {
-      id: 'customer',
-      title: '客户',
-      valueType: 'relation',
-      path: ['customer'],
-      transport: { filterKey: 'customer_id', selectKey: 'customer' },
-      filter: true,
-      options: {
-        dependsOn: ['status'],
-        cacheTime: 60_000,
-        load: async ({ search, signal }) => {
-          const items = await searchCustomers(search, signal);
-          return items.map((item) => ({ label: item.name, value: item.id }));
-        },
-      },
-    },
-    {
-      id: 'amount',
-      title: '金额',
-      valueType: 'money',
-      path: ['amount'],
-      meta: { currency: 'CNY' },
-      filter: true,
-      sort: true,
-    },
-    {
-      id: 'status',
-      title: '状态',
-      valueType: 'status',
-      filter: true,
-      options: [
-        { label: '待处理', value: 'pending', color: 'gold' },
-        { label: '已完成', value: 'completed', color: 'green' },
-      ],
-    },
-    {
-      id: 'createdAt',
-      title: '创建时间',
-      valueType: 'dateTime',
-      filter: true,
-      sort: true,
-    },
-  ],
+  fields,
 });
 
 const source = createRemoteSource<Order>({
@@ -208,18 +206,17 @@ export function OrderList() {
 字段描述数据语义，列描述表格布局。一个字段可以没有列；一个列可以是分组、计算展示或平台专用列。
 
 ```tsx
+const field = createFieldHelper<Order>();
 const definition = defineGrid<Order>({
   id: 'grouped-orders',
   rowKey: 'id',
   fields: [
-    { id: 'orderNo', title: '订单号', sort: true },
-    {
-      id: 'customerName',
+    field.property('orderNo', { title: '订单号', sort: true }),
+    field.accessor('customerName', (row) => row.customer.name, {
       title: '客户名称',
-      accessor: (row) => row.customer.name,
       transport: { filterKey: 'customer_name' },
       filter: true,
-    },
+    }),
   ],
   columns: [
     {
@@ -241,7 +238,7 @@ const definition = defineGrid<Order>({
 
 内置 value type：`text`、`longText`、`number`、`decimal`、`money`、`percent`、`boolean`、`select`、`multiSelect`、`status`、`date`、`dateTime`、`duration`、`link`、`email`、`phone`、`user`、`relation`、`image`、`file`、`json`。
 
-未知 value type 会回退到 text 行为；通过 `definition.valueTypes` 可注册 codec、比较、搜索、筛选、渲染与编辑行为。
+未知 value type 会在 definition 解析时直接报错，避免把协议拼写错误静默显示成文本。通过 `definition.valueTypes` 注册后，可提供 codec、比较、搜索、筛选、渲染与编辑行为。
 
 ## 数据源
 
@@ -357,6 +354,8 @@ const [query, setQuery] = useState<GridQuery>(initialQuery);
 
 可控制的 slice 为 `query`、`columns`、`selection`、`data`、`views`、`editing`、`actions`。通常只控制业务必须拥有的 slice，其余交给实例管理即可。
 
+跨租户、项目或其他数据边界复用实例时必须给 source 设置稳定的 `datasetKey`。边界变化时，Core 会取消旧工作并隔离仍未被父层替换的受控 data/selection/editing/actions；收到 `dataset.controlled.reset` 后应把清空后的 slice 写回业务状态。
+
 ## Actions、选择与编辑
 
 动作定义统一覆盖 toolbar、row、bulk 和 cell，自动处理 visible、disabled、确认框、并发保护、错误与刷新：
@@ -390,16 +389,16 @@ const definition = defineGrid<Order>({
 编辑由 definition 统一保存，字段只声明是否可编辑：
 
 ```tsx
+const field = createFieldHelper<Order>();
 const definition = defineGrid<Order>({
   // ...
   fields: [
-    {
-      id: 'status',
+    field.property('status', {
       title: '状态',
       valueType: 'status',
       edit: { enabled: true, required: true },
       options: statusOptions,
-    },
+    }),
   ],
   editing: {
     optimistic: true,
@@ -476,7 +475,7 @@ import { DataGrid, GridTable } from '@huiyun/data-grid/antd';
 import '@huiyun/data-grid/style.css';
 ```
 
-- `@huiyun/data-grid/core`：纯 TypeScript，无 React、Ant Design、CSS 或 DOM 运行时依赖；类型协议使用标准 `AbortSignal` 和可选 `Storage`。
+- `@huiyun/data-grid/core`：纯 TypeScript，无 React、Ant Design、CSS 或 DOM 运行时依赖；类型协议使用标准 `AbortSignal` 与最小 `GridStorageLike`，不要求 DOM lib。
 - `@huiyun/data-grid/react`：实例生命周期、Provider 和 selector 订阅。
 - `@huiyun/data-grid/antd`：Ant Design 6 原子组件与默认配方。
 - 根入口：便捷导出以上公共 API。

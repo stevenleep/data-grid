@@ -16,7 +16,19 @@ import {
   type GridState,
 } from '../core';
 
-const GridContext = createContext<GridInstance<any> | null>(null);
+interface GridRuntimeSubscription {
+  getRuntimeRevision?: () => number;
+  subscribeRuntime?: (listener: () => void) => () => void;
+}
+
+interface GridContextValue {
+  instance: GridInstance<any>;
+  runtimeRevision: number;
+}
+
+const emptyRuntimeSubscribe = () => () => undefined;
+const zeroRuntimeRevision = () => 0;
+const GridContext = createContext<GridContextValue | null>(null);
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function definitionKey<Row extends object>(options: GridOptions<Row>): string {
@@ -29,7 +41,7 @@ export function useGrid<Row extends object>(options: GridOptions<Row>): GridInst
 
   useIsomorphicLayoutEffect(() => {
     instance.updateOptions(options);
-  });
+  }, [instance, options]);
 
   useEffect(() => {
     void instance.start();
@@ -45,23 +57,38 @@ export interface GridProviderProps<Row extends object> {
 }
 
 export function GridProvider<Row extends object>({ value, children }: GridProviderProps<Row>) {
-  return <GridContext.Provider value={value}>{children}</GridContext.Provider>;
+  const runtime = value as GridInstance<Row> & GridRuntimeSubscription;
+  const runtimeRevision = useSyncExternalStore(
+    runtime.subscribeRuntime || emptyRuntimeSubscribe,
+    runtime.getRuntimeRevision || zeroRuntimeRevision,
+    runtime.getRuntimeRevision || zeroRuntimeRevision,
+  );
+  const context = useMemo<GridContextValue>(
+    () => ({ instance: value, runtimeRevision }),
+    [runtimeRevision, value],
+  );
+  return <GridContext.Provider value={context}>{children}</GridContext.Provider>;
 }
 
 export function useGridInstance<Row extends object>(): GridInstance<Row> {
-  const instance = useContext(GridContext);
-  if (!instance) throw new Error('Grid components must be rendered inside GridProvider.');
-  return instance as GridInstance<Row>;
+  const context = useContext(GridContext);
+  if (!context) throw new Error('Grid components must be rendered inside GridProvider.');
+  return context.instance as GridInstance<Row>;
 }
 
 export function useGridSelector<Row extends object, Value>(
   selector: (state: GridState<Row>) => Value,
   isEqual: (previous: Value, next: Value) => boolean = Object.is,
 ): Value {
-  const instance = useGridInstance<Row>();
+  const context = useContext(GridContext);
+  if (!context) throw new Error('Grid components must be rendered inside GridProvider.');
+  const instance = context.instance as GridInstance<Row>;
+  const runtimeRevision = context.runtimeRevision;
   const selectorRef = useRef(selector);
   const equalityRef = useRef(isEqual);
-  const cacheRef = useRef<{ state: GridState<Row>; value: Value } | undefined>(undefined);
+  const cacheRef = useRef<
+    { state: GridState<Row>; runtimeRevision: number; value: Value } | undefined
+  >(undefined);
 
   if (selectorRef.current !== selector || equalityRef.current !== isEqual) {
     selectorRef.current = selector;
@@ -72,12 +99,12 @@ export function useGridSelector<Row extends object, Value>(
   const getSnapshot = useCallback(() => {
     const state = instance.getState();
     const cached = cacheRef.current;
-    if (cached?.state === state) return cached.value;
+    if (cached?.state === state && cached.runtimeRevision === runtimeRevision) return cached.value;
     const selected = selectorRef.current(state);
     const value = cached && equalityRef.current(cached.value, selected) ? cached.value : selected;
-    cacheRef.current = { state, value };
+    cacheRef.current = { state, runtimeRevision, value };
     return value;
-  }, [instance]);
+  }, [instance, runtimeRevision]);
 
   return useSyncExternalStore(instance.subscribe, getSnapshot, getSnapshot);
 }

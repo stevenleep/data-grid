@@ -1,7 +1,7 @@
-import { App as AntApp, ConfigProvider, Space } from 'antd';
-import { useEffect, useMemo } from 'react';
-import type { GridInstance, GridOptions } from '../core';
-import { GridProvider, useGrid, useGridSelector } from '../react';
+import { App as AntApp, Button, ConfigProvider, Space } from 'antd';
+import { useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react';
+import { createGridEvent, type GridInstance, type GridOptions } from '../core';
+import { GridProvider, useGrid } from '../react';
 import { useGridInstance } from '../react';
 import { GridActions, GridSelectionBar } from './actions';
 import { GridColumnTrigger } from './columns';
@@ -25,6 +25,7 @@ import { GridSortTrigger } from './sort';
 import { GridTable } from './table';
 import { resolveGridLocale } from './locale';
 import { GridRenderErrorBoundary } from './render';
+import { useGridSelectionCount, useResolvedGridSelectionMode } from './selection-mode';
 import type { DataGridProps, GridFooterFeatures, GridToolbarFeatures, GridUiConfig } from './types';
 import { GridViewTrigger } from './views';
 
@@ -46,24 +47,31 @@ const defaultFooter: Required<GridFooterFeatures> = {
   pagination: true,
 };
 
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
 function GridDefaultToolbarEnd<Row extends object>({
   features,
 }: {
   features: Required<GridToolbarFeatures>;
 }) {
-  const selection = useGridSelector<Row, { count: number }>(
-    (state) => ({
-      count:
-        state.selection.mode === 'explicit'
-          ? state.selection.selectedKeys.length
-          : Math.max(0, state.selection.total - state.selection.excludedKeys.length),
-    }),
-    (left, right) => left.count === right.count,
+  const instance = useGridInstance<Row>();
+  const ui = useGridUi<Row>();
+  const configuredSelection = ui.selection ?? instance.definition.defaults?.selection;
+  const configuredSelectionProps =
+    typeof configuredSelection === 'object' ? configuredSelection : undefined;
+  const selectionMode = useResolvedGridSelectionMode(
+    instance,
+    configuredSelection
+      ? configuredSelectionProps?.type === 'radio'
+        ? 'radio'
+        : 'checkbox'
+      : undefined,
   );
-  if (selection.count) {
+  const selectionCount = useGridSelectionCount(instance, selectionMode);
+  if (selectionCount) {
     return (
       <>
-        <GridSelectionBar<Row> />
+        <GridSelectionBar<Row> actions={features.actions} />
       </>
     );
   }
@@ -148,15 +156,10 @@ export function GridDefaultFooter<Row extends object>({
   );
 }
 
-function DataGridContent<Row extends object>({
-  props,
-  instance,
-}: {
-  props: DataGridProps<Row>;
-  instance: GridInstance<Row>;
-}) {
+function DataGridContent<Row extends object>({ props }: { props: DataGridProps<Row> }) {
+  const instance = useGridInstance<Row>();
   if (typeof props.children === 'function') return props.children(instance);
-  if (props.children) return props.children;
+  if (props.children !== undefined && props.children !== null) return props.children;
   return (
     <GridShell className={props.className} style={props.style}>
       {props.toolbar !== false && <GridDefaultToolbar<Row> features={props.toolbar} />}
@@ -170,14 +173,48 @@ function DataGridContent<Row extends object>({
   );
 }
 
+function DataGridRenderBoundary<Row extends object>({
+  props,
+  children,
+}: {
+  props: DataGridProps<Row>;
+  children: ReactNode;
+}) {
+  const locale = resolveGridLocale(props.locale, props.language);
+  return (
+    <GridRenderErrorBoundary
+      resetKey={props.children ?? props.definition}
+      onError={(error, info) => {
+        props.onError?.(
+          error,
+          createGridEvent('render.error', 'system', {
+            componentStack: info.componentStack || undefined,
+          }),
+        );
+      }}
+      fallback={(_error, reset) => (
+        <div className="hui-grid hui-grid__error" role="alert">
+          <span>{locale.renderFailed}</span>
+          <Button size="small" type="link" onClick={reset}>
+            {locale.retry}
+          </Button>
+        </div>
+      )}
+    >
+      {children}
+    </GridRenderErrorBoundary>
+  );
+}
+
 export function DataGrid<Row extends object>(props: DataGridProps<Row>) {
+  const effectiveTimeZone = props.temporal?.timeZone ?? props.timeZone;
   const gridOptions: GridOptions<Row> = {
     ...props,
     temporal:
-      props.temporal || props.timeZone
+      props.temporal || effectiveTimeZone
         ? {
             ...props.temporal,
-            timeZone: props.temporal?.timeZone ?? props.timeZone,
+            timeZone: effectiveTimeZone,
           }
         : undefined,
   };
@@ -186,7 +223,7 @@ export function DataGrid<Row extends object>(props: DataGridProps<Row>) {
     () => ({
       locale: props.locale,
       language: props.language,
-      timeZone: props.timeZone,
+      timeZone: effectiveTimeZone,
       theme: props.theme,
       antdLocale: props.antdLocale,
       pageSizeOptions: props.pageSizeOptions,
@@ -198,6 +235,14 @@ export function DataGrid<Row extends object>(props: DataGridProps<Row>) {
       isCellClickable: props.isCellClickable,
       renderEmpty: props.renderEmpty,
       renderError: props.renderError,
+      onRenderError: (error, info) => {
+        props.onError?.(
+          error,
+          createGridEvent('render.error', 'system', {
+            componentStack: info.componentStack || undefined,
+          }),
+        );
+      },
     }),
     [
       props.antdLocale,
@@ -210,35 +255,27 @@ export function DataGrid<Row extends object>(props: DataGridProps<Row>) {
       props.isRowClickable,
       props.renderEmpty,
       props.renderError,
+      props.onError,
       props.selection,
       props.tableProps,
       props.theme,
-      props.timeZone,
+      effectiveTimeZone,
     ],
   );
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (!props.onEvent) return;
-    return instance.subscribeEvent((event) => props.onEvent?.(event, instance.getState()));
+    return instance.subscribeEvent((event, state) => props.onEvent?.(event, state));
   }, [instance, props.onEvent]);
-
-  const locale = resolveGridLocale(props.locale, props.language);
 
   return (
     <GridProvider value={instance}>
       <GridUiProvider value={ui}>
         <ConfigProvider theme={props.theme} locale={props.antdLocale}>
           <AntApp component="div" className="hui-grid__antd-app">
-            <GridRenderErrorBoundary
-              resetKey={props.children || props.definition}
-              fallback={
-                <div className="hui-grid hui-grid__error" role="alert">
-                  {locale.renderFailed}
-                </div>
-              }
-            >
-              <DataGridContent props={props} instance={instance} />
-            </GridRenderErrorBoundary>
+            <DataGridRenderBoundary props={props}>
+              <DataGridContent props={props} />
+            </DataGridRenderBoundary>
           </AntApp>
         </ConfigProvider>
       </GridUiProvider>

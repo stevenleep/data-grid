@@ -1,3 +1,5 @@
+'use client';
+
 export { DataGrid, GridDefaultFooter, GridDefaultToolbar } from './DataGrid';
 export type { GridDefaultFooterProps, GridDefaultToolbarProps } from './DataGrid';
 export { GridUiProvider, useGridUi } from './context';
@@ -49,4 +51,23 @@ export { GridTable } from './table';
 export type { GridTableProps } from './table';
 export { GridViewPanel, GridViewTrigger } from './views';
 export type { GridViewPanelProps, GridViewTriggerProps } from './views';
-export type * from './types';
+export type {
+  DataGridProps,
+  GridCellClickContext,
+  GridCellInteractionContext,
+  GridFieldRenderContext,
+  GridFooterFeatures,
+  GridLocale,
+  GridRenderContext,
+  GridRowActionsConfig,
+  GridRowClickContext,
+  GridRowInteractionContext,
+  GridTablePlatformProps,
+  GridTableSelectionProps,
+  GridToolbarFeatures,
+  GridUiConfig,
+} from './types';
+// Core contracts referenced by the AntD component props are re-exported so the
+// subpath is a complete, nameable TypeScript API surface.
+export type * from '../core';
+export type { GridPagination as GridPaginationState, GridTotal as GridTotalValue } from '../core';

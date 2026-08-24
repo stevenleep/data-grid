@@ -1,4 +1,9 @@
+'use client';
+
 export * from './core';
+// The root value `GridTotal` is the AntD component; expose the Core descriptor
+// under an unambiguous type name. `/core` keeps the original `GridTotal` type.
+export type { GridPagination as GridPaginationState, GridTotal as GridTotalValue } from './core';
 export * from './react';
 export {
   DataGrid,

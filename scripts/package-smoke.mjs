@@ -44,19 +44,30 @@ function installedVersion(packageName, baseDirectory = repositoryDirectory) {
 
 const currentVersions = {
   icons: installedVersion('@ant-design/icons'),
+  nodeTypes: installedVersion('@types/node'),
   antd: installedVersion('antd'),
   react: installedVersion('react'),
   reactDom: installedVersion('react-dom'),
   reactTypes: installedVersion('@types/react'),
   reactDomTypes: installedVersion('@types/react-dom'),
+  jsdom: installedVersion('jsdom'),
+  playwright: installedVersion('playwright'),
   typescript: installedVersion('typescript'),
+  typescriptCurrent: installedVersion('typescript-current'),
   vite: installedVersion('vite', join(repositoryDirectory, 'examples', 'demo')),
 };
 
 const profiles = {
-  'core-only': {
+  'core-min': {
     kind: 'core',
-    label: 'Core only without UI peers',
+    label: 'Core only / TypeScript 5.4 lower boundary / no DOM lib or UI peers',
+    nodeTypes: '20.11.30',
+    typescript: '5.4.5',
+  },
+  'core-current': {
+    kind: 'core',
+    label: 'Core only / current repository TypeScript / no DOM lib or UI peers',
+    nodeTypes: currentVersions.nodeTypes,
     typescript: currentVersions.typescript,
   },
   'react18-min': {
@@ -64,8 +75,8 @@ const profiles = {
     label: 'React 18 / Ant Design 6 / TypeScript 5.4 lower boundary',
     react: '18.0.0',
     reactDom: '18.0.0',
-    reactTypes: '^18.3.0',
-    reactDomTypes: '^18.3.0',
+    reactTypes: '18.0.0',
+    reactDomTypes: '18.0.0',
     antd: '6.0.0',
     icons: '6.0.0',
     typescript: '5.4.5',
@@ -86,8 +97,8 @@ const profiles = {
     label: 'React 19 / Ant Design 6 / TypeScript 5.4 lower boundary',
     react: '19.0.0',
     reactDom: '19.0.0',
-    reactTypes: currentVersions.reactTypes,
-    reactDomTypes: currentVersions.reactDomTypes,
+    reactTypes: '19.0.0',
+    reactDomTypes: '19.0.0',
     antd: '6.0.0',
     icons: '6.0.0',
     typescript: '5.4.5',
@@ -101,7 +112,7 @@ const profiles = {
     reactDomTypes: currentVersions.reactDomTypes,
     antd: currentVersions.antd,
     icons: currentVersions.icons,
-    typescript: '7.0.2',
+    typescript: currentVersions.typescriptCurrent,
   },
 };
 
@@ -149,6 +160,14 @@ function listFiles(directory) {
 
 const profile = readProfile();
 const withVite = profile.kind === 'ui' && hasFlag('with-vite');
+const withBrowser = profile.kind === 'ui' && hasFlag('with-browser');
+const manager = readArgument('manager') ?? 'pnpm';
+if (!['npm', 'pnpm'].includes(manager)) {
+  throw new Error(`Unknown package manager: ${manager}. Expected npm or pnpm.`);
+}
+if (withBrowser && !withVite) {
+  throw new Error('--with-browser requires --with-vite.');
+}
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'huiyun-data-grid-package-'));
 const consumerDirectory = join(temporaryDirectory, 'consumer');
 const tarballPath = join(temporaryDirectory, 'huiyun-data-grid.tgz');
@@ -164,6 +183,7 @@ try {
   };
   const devDependencies = {
     typescript: profile.typescript,
+    ...(profile.kind === 'core' ? { '@types/node': profile.nodeTypes } : {}),
   };
 
   if (profile.kind === 'ui') {
@@ -176,7 +196,9 @@ try {
     Object.assign(devDependencies, {
       '@types/react': profile.reactTypes,
       '@types/react-dom': profile.reactDomTypes,
+      jsdom: currentVersions.jsdom,
       ...(withVite ? { vite: currentVersions.vite } : {}),
+      ...(withBrowser ? { playwright: currentVersions.playwright } : {}),
     });
   }
 
@@ -196,11 +218,20 @@ try {
     )}\n`,
   );
 
-  run(
-    'pnpm',
-    ['install', '--ignore-scripts', '--frozen-lockfile=false', '--config.auto-install-peers=false'],
-    consumerDirectory,
-  );
+  if (manager === 'pnpm') {
+    run(
+      'pnpm',
+      [
+        'install',
+        '--ignore-scripts',
+        '--frozen-lockfile=false',
+        '--config.auto-install-peers=false',
+      ],
+      consumerDirectory,
+    );
+  } else {
+    run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], consumerDirectory);
+  }
 
   const installedPackage = join(consumerDirectory, 'node_modules', '@huiyun', 'data-grid');
   const expectedFiles = [
@@ -241,6 +272,36 @@ try {
   const stylesheet = readFileSync(join(installedPackage, 'dist', 'style.css'), 'utf8');
   assert.match(stylesheet, /\.hui-grid/);
 
+  for (const clientEntry of ['index', 'react', 'antd']) {
+    for (const extension of ['mjs', 'cjs']) {
+      const contents = readFileSync(
+        join(installedPackage, 'dist', `${clientEntry}.${extension}`),
+        'utf8',
+      );
+      assert.match(
+        contents,
+        /^['"]use client['"];/,
+        `${clientEntry}.${extension} must preserve the React Server Components client boundary`,
+      );
+    }
+  }
+  for (const extension of ['mjs', 'cjs']) {
+    const coreContents = readFileSync(join(installedPackage, 'dist', `core.${extension}`), 'utf8');
+    assert.doesNotMatch(
+      coreContents,
+      /^['"]use client['"];/,
+      `core.${extension} must remain server-safe`,
+    );
+  }
+
+  const binary = (name) =>
+    join(
+      consumerDirectory,
+      'node_modules',
+      '.bin',
+      `${name}${process.platform === 'win32' ? '.cmd' : ''}`,
+    );
+
   if (profile.kind === 'core') {
     for (const uiPeer of ['react', 'react-dom', 'antd', join('@ant-design', 'icons')]) {
       assert.equal(
@@ -252,16 +313,17 @@ try {
 
     run('node', ['core-esm.mjs'], consumerDirectory);
     run('node', ['core-cjs.cjs'], consumerDirectory);
-    run('pnpm', ['exec', 'tsc', '--project', 'tsconfig.core.json'], consumerDirectory);
+    run(binary('tsc'), ['--project', 'tsconfig.core.json'], consumerDirectory);
   } else {
     const reactMajor = profile.react.split('.')[0];
     run('node', ['esm.mjs', reactMajor], consumerDirectory);
     run('node', ['cjs.cjs'], consumerDirectory);
-    run('pnpm', ['exec', 'tsc', '--project', 'tsconfig.bundler.json'], consumerDirectory);
-    run('pnpm', ['exec', 'tsc', '--project', 'tsconfig.nodenext.json'], consumerDirectory);
+    run('node', ['client.mjs'], consumerDirectory);
+    run(binary('tsc'), ['--project', 'tsconfig.bundler.json'], consumerDirectory);
+    run(binary('tsc'), ['--project', 'tsconfig.nodenext.json'], consumerDirectory);
 
     if (withVite) {
-      run('pnpm', ['exec', 'vite', 'build', '--outDir', 'vite-dist'], consumerDirectory);
+      run(binary('vite'), ['build', '--outDir', 'vite-dist'], consumerDirectory);
       const viteFiles = listFiles(join(consumerDirectory, 'vite-dist'));
       assert.ok(
         viteFiles.some((file) => file.endsWith('.js')),
@@ -271,10 +333,11 @@ try {
         viteFiles.some((file) => file.endsWith('.css')),
         'Vite emitted no CSS',
       );
+      if (withBrowser) run('node', ['browser-smoke.mjs'], consumerDirectory);
     }
   }
 
-  process.stdout.write(`Package consumer smoke test passed: ${profile.label}.\n`);
+  process.stdout.write(`Package consumer smoke test passed: ${profile.label} via ${manager}.\n`);
 } finally {
   if (process.env.KEEP_PACKAGE_SMOKE !== '1') {
     rmSync(temporaryDirectory, { recursive: true, force: true });

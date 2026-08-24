@@ -97,6 +97,8 @@ readonly 视图不可保存或删除；对当前视图修改 query/columns 后 `
 
 不同用户、租户或页面环境应使用不同 scope。
 
+`storage` 接受最小结构类型 `GridStorageLike`（`getItem` / `setItem` / `removeItem`），因此可接浏览器 Storage、SSR-safe 包装器或测试 adapter，不要求 Core consumer 引入 DOM `lib`。
+
 本地 adapter 会拒绝损坏或结构不完整的 JSON，也会安全处理浏览器禁止访问 storage 的情况。它仍然是明文 `localStorage`：命名视图会保存筛选值和 query context，因此不要把密钥、身份证号、访问令牌或其他敏感数据放进可持久化查询。涉及敏感字段、共享视图、审计、权限或多端同步时，应使用服务端 adapter，并在服务端执行字段级过滤、授权和版本控制。
 
 ## 服务端持久化
@@ -114,12 +116,14 @@ const persistence: GridPersistence<Order> = {
 };
 ```
 
-`persistence.identity` 表示当前账户/租户/存储会话，而不是 adapter 对象的瞬时引用。同一会话重建 adapter 时保持它稳定；切换账户、租户或存储后立即更换它。身份变化会先处理上一会话的待保存状态，并启动新会话的恢复；迟到的旧 `load` 不会覆盖新账户。`createLocalGridPersistence` 会由 prefix/scope/storage 生成默认 identity，服务端 adapter 应显式声明。
+`persistence.identity` 表示当前账户/租户/存储会话，而不是 adapter 对象的瞬时引用。同一会话重建 adapter 时保持它稳定；切换账户、租户或存储后立即更换它。身份变化会先处理上一会话的待保存状态，立即回到该 Grid 的初始偏好基线，再启动新会话恢复；新会话返回 `null` 时也不会继续显示旧账户的 active view、筛选或列设置，迟到的旧 `load` 同样不能覆盖新账户。`createLocalGridPersistence` 会由 prefix/scope/storage 生成默认 identity，服务端 adapter 应显式声明。
 
 identity 只用于客户端会话隔离，不代表身份认证。服务端 `load/save/clear` 仍必须从已验证的请求上下文确定用户和租户，不应信任客户端传入的 identity。
 
 `parseGridPersistedState(input: unknown)` 是自定义/远端 adapter 的不可信返回值边界：它校验 `huiyun.data-grid/preferences/v1`、grid/revision、列状态、视图、查询 JSON 形状、唯一 id 与 ISO 时间。解析成功不代表用户有权读取该偏好；adapter 仍需验证归属，Core 仍会按当前 `gridId`/revision 决定恢复或迁移。本地 adapter 已在内部使用同一解析器。
 
 持久化协议包含 grid id、revision、列状态、命名视图、active view 和更新时间。revision 不匹配时，只有提供 `migrate` 才会恢复。
+
+偏好保存采用合并/排队写入。路由离开、切换账户或需要确认写入完成时使用 `await instance.flushPersistence()`；它会立即提交 debounce 中的状态并等待队列清空。该方法只确认 adapter promise 已完成，不代替服务端事务、鉴权或并发控制。
 
 `shared` / `system` 是视图协议中的 scope，不代表客户端自动获得协作能力。服务端实现仍需定义创建、更新、删除权限，使用版本号或 ETag 处理并发冲突，并对只读视图强制授权；不要只依赖前端按钮隐藏。

@@ -17,7 +17,7 @@
 
 ### Core
 
-纯 TypeScript，不依赖 React、Ant Design、CSS 或 DOM 运行时。公共类型使用 Web/Node 共有的 `AbortSignal` 和本地持久化的可选 `Storage` 协议；没有 DOM typings 的 TypeScript 服务项目应在 `lib` 中加入 `DOM`，或提供兼容的 ambient types。它负责：
+纯 TypeScript，不依赖 React、Ant Design、CSS 或 DOM 运行时。本地持久化只依赖公开的最小 `GridStorageLike` 结构，不引用 DOM `Storage`；异步取消沿用 Web 与现代 Node 共有的标准 `AbortSignal`。Node 服务项目使用匹配运行时的 `@types/node`，浏览器/Worker 项目由相应 platform lib 提供 `AbortSignal`，不需要为了本地存储而额外引入完整 DOM typings。它负责：
 
 - 解析字段和列定义。
 - 维护 query、columns、selection、data、views、editing、actions 七个状态域。

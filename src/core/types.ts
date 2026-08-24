@@ -2,6 +2,7 @@ export type GridPrimitive = string | number | boolean | null;
 export type GridJsonValue = GridPrimitive | GridJsonValue[] | { [key: string]: GridJsonValue };
 export type GridOptionValue = Exclude<GridPrimitive, null>;
 export type GridPath = readonly (string | number)[];
+/** Entity identity; numeric `1` and string `"1"` are intentionally equivalent. */
 export type GridRowKey = string | number;
 export type GridNode = unknown;
 
@@ -240,6 +241,13 @@ export interface GridValueTypeDefinition<Row extends object = object, Value = un
   filterEditor?: GridFilterEditorRenderer<Row>;
 }
 
+/** Type-erased entry used only at heterogeneous registry boundaries. */
+export type GridAnyValueTypeDefinition<Row extends object> = GridValueTypeDefinition<Row, any>;
+export type GridValueTypeRegistry<Row extends object> = Record<
+  string,
+  GridAnyValueTypeDefinition<Row>
+>;
+
 export interface GridFieldTransport<Value = unknown> {
   filterKey?: string;
   sortKey?: string;
@@ -271,6 +279,10 @@ export interface GridFieldSort {
 export interface GridFieldEdit {
   enabled?: boolean;
   required?: boolean;
+  /** Whether the editor accepts a collection of values instead of one value. */
+  multiple?: boolean;
+  /** Explicit representation used by numeric editors, especially for exact decimals. */
+  numericMode?: 'number' | 'string';
   editor?: string;
   placeholder?: string;
 }
@@ -478,7 +490,7 @@ export interface GridRuntime<Row extends object> {
   actionHandlers?: Record<string, GridActionHandler<Row>>;
   actions?: Record<string, GridActionRuntime<Row>>;
   editing?: GridEditing<Row>;
-  valueTypes?: Record<string, GridValueTypeDefinition<Row>>;
+  valueTypes?: GridValueTypeRegistry<Row>;
 }
 
 export type GridActionPlacement = 'toolbar' | 'row' | 'bulk' | 'cell';
@@ -578,10 +590,13 @@ export interface GridDefinition<Row extends object> {
   id: string;
   revision?: string | number;
   rowKey: string | GridPath | ((row: Row) => GridRowKey);
+  /** Stable semantic identity for a functional rowKey recreated across renders. */
+  rowKeyIdentity?: string | number;
   projection?: GridProjectionDefinition;
+  /** Use createFieldHelper.property/accessor to preserve each heterogeneous field's Value type. */
   fields: readonly GridAnyFieldDefinition<Row>[];
   columns?: readonly GridColumnDefinition<Row>[];
-  valueTypes?: Record<string, GridValueTypeDefinition<Row>>;
+  valueTypes?: GridValueTypeRegistry<Row>;
   actions?: readonly GridAction<Row>[];
   editing?: GridEditing<Row>;
   defaults?: GridFeatureDefaults;
@@ -952,6 +967,15 @@ export interface GridOptionsApi {
   clear: (fieldId?: string) => void;
 }
 
+export interface GridProjectionApi {
+  /**
+   * Adds semantic fields required by a mounted renderer without persisting them
+   * into the user's query. The returned cleanup is idempotent and reference-counted.
+   */
+  register: (fieldIds: readonly string[]) => () => void;
+  getRequiredFields: () => readonly string[];
+}
+
 export interface GridInstance<Row extends object> {
   readonly definition: GridResolvedDefinition<Row>;
   readonly capabilities: GridResolvedCapabilities;
@@ -963,12 +987,20 @@ export interface GridInstance<Row extends object> {
   readonly editing: GridEditingApi<Row>;
   readonly actions: GridActionsApi<Row>;
   readonly options: GridOptionsApi;
+  readonly projection: GridProjectionApi;
   getState: () => GridState<Row>;
   subscribe: (listener: () => void) => () => void;
-  subscribeEvent: (listener: (event: GridEvent) => void) => () => void;
+  /**
+   * Subscribes to semantic events. The second callback argument is the effective
+   * state captured by the commit that produced the event; it does not drift when
+   * another observer performs a reentrant update.
+   */
+  subscribeEvent: (listener: (event: GridEvent, state: GridState<Row>) => void) => () => void;
   updateOptions: (options: GridOptions<Row>) => void;
   start: () => Promise<void>;
   stop: () => void;
+  /** Immediately saves pending preferences and waits for queued persistence writes. */
+  flushPersistence: () => Promise<void>;
   destroy: () => void;
   batch: (callback: () => void) => void;
 }

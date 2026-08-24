@@ -5,11 +5,11 @@
 `GridFieldDefinition` 描述数据如何读取、筛选、排序、搜索、编辑、验证和传输。
 
 ```tsx
-{
-  id: 'customer',
+const field = createFieldHelper<Order>();
+
+const customerField = field.property('customer', {
   title: '客户',
   valueType: 'relation',
-  accessor: (row) => row.customer,
   normalize: (value) => normalizeCustomer(value),
   searchText: (value) => value.name,
   filter: { enabled: true },
@@ -22,10 +22,12 @@
     encodeValue: (value) => value.id,
   },
   options: customerOptions,
-}
+});
 ```
 
 取值优先级为 `accessor` → `path` → 与 `id` 同名路径。复杂或计算字段使用 `accessor`，普通字段通常只写 `id` 即可。
+
+希望保留普通属性的精确值类型时，优先使用 `createFieldHelper<Row>().property(key, options)`；它会把 `key` 同时作为字段 id/path，并把 `Row[Key]` 传给 codec、编辑器和 renderer。集合型编辑器应显式声明 `edit: { enabled: true, multiple: true }`，不要仅从 `valueType` 名称推断单值/多值。精确小数或超出 JavaScript 安全整数的输入应声明 `edit.numericMode: 'string'` 并由 codec/服务端校验；普通数值可显式使用 `'number'`。
 
 ## 列负责展示
 
@@ -68,29 +70,31 @@ columns: [
 codec 显式区分表格中的业务值与 JSON-safe 传输值：
 
 ```ts
+const instantValueType = defineGridValueType<Order, Date>({
+  codec: {
+    encode: (value) => {
+      if (!(value instanceof Date)) throw new Error('Expected Date');
+      return value.toISOString();
+    },
+    decode: (value) => {
+      if (typeof value !== 'string') throw new Error('Expected ISO date string');
+      return new Date(value);
+    },
+  },
+});
+const field = createFieldHelper<Order>();
+
 const definition = defineGrid<Order>({
   // ...
   valueTypes: {
-    instant: {
-      codec: {
-        encode: (value) => {
-          if (!(value instanceof Date)) throw new Error('Expected Date');
-          return value.toISOString();
-        },
-        decode: (value) => {
-          if (typeof value !== 'string') throw new Error('Expected ISO date string');
-          return new Date(value);
-        },
-      },
-    },
+    instant: instantValueType,
   },
   fields: [
-    {
-      id: 'approvedAt',
+    field.property('approvedAt', {
       title: '审批时间',
       valueType: 'instant',
       edit: true,
-    },
+    }),
   ],
 });
 ```
@@ -98,6 +102,8 @@ const definition = defineGrid<Order>({
 解析后的字段公开 `field.codec`、`field.encodeValue(value)` 和 `field.decodeValue(json)`。`transport.encodeValue` 可以按字段覆盖 codec 的 `encode`，例如实体对象只上传 id。编码结果必须是 `GridJsonValue | undefined`；函数、`Date`、`Map`、`NaN`、`Infinity` 和循环引用都不是合法线上值。
 
 Core 不会自动遍历数据源返回的每行并解码；后端响应/表单 adapter 应在组装 row 时调用 `decodeValue`。编辑保存时 Core 会自动调用 `encodeValue`，并把业务值和编码值同时交给 `editing.save`。
+
+`defineGridValueType<Row, Value>()` 用于在值类型进入异构 registry 前保留自定义 `Value` 的函数参数类型。`GridAnyValueTypeDefinition<Row>` 的类型擦除只服务于框架内部的异构存储边界；业务代码不应把 callback 标注成它或 `any`，而应通过 `defineGridValueType` 构造后再放入 `GridValueTypeRegistry<Row>`。
 
 ## 静态和动态选项
 
@@ -132,7 +138,15 @@ options: {
 
 ## 关系字段的本地筛选
 
-如果显示值是 `{ id, name }`，而筛选值是 id，Local source 需要自定义 `filterPredicate`：
+内置 `relation` / `user` 会把 primitive 或对象的 `id` / `value` / `key` 当作实体身份，因此 `{ id, name }` 可以直接与 id 筛选值比较，单值和集合值都不依赖对象引用或显示文本。
+
+业务实体使用其他身份字段时，优先声明 `getIdentity`：
+
+```ts
+getIdentity: (entity) => entity?.customerCode;
+```
+
+只有需要完全自定义某个操作符语义时才实现 `filterPredicate`，返回 `undefined` 可把未处理的操作符交回内置逻辑：
 
 ```ts
 filterPredicate: (entity, condition) => {

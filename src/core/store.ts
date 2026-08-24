@@ -46,6 +46,7 @@ import type {
   GridPagination,
   GridPersistedState,
   GridPersistence,
+  GridProjectionApi,
   GridQuery,
   GridReadResult,
   GridRemoteSource,
@@ -75,6 +76,14 @@ interface OptionCacheEntry {
   controller?: AbortController;
   consumers?: number;
   createdAt: number;
+}
+
+interface GridNotification<Row extends object> {
+  changed: boolean;
+  event?: GridEvent;
+  desiredState?: GridState<Row>;
+  eventState?: GridState<Row>;
+  onStateChange?: GridOptions<Row>['onStateChange'];
 }
 
 const abortedOperation = Symbol('grid-aborted-operation');
@@ -109,15 +118,42 @@ function leafColumns<Row extends object>(
   );
 }
 
+function canonicalColumnOrder<Row extends object>(
+  columns: readonly GridResolvedColumn<Row>[],
+  requested: readonly string[],
+): string[] {
+  const natural = leafColumns(columns).map((column) => column.id);
+  const known = new Set(natural);
+  const complete = uniqueStrings([
+    ...requested.filter((id) => known.has(id)),
+    ...natural.filter((id) => !requested.includes(id)),
+  ]);
+  const orderIndex = new Map(complete.map((id, index) => [id, index]));
+  const minimumIndex = (column: GridResolvedColumn<Row>): number =>
+    column.children?.length
+      ? Math.min(...column.children.map(minimumIndex))
+      : (orderIndex.get(column.id) ?? Number.MAX_SAFE_INTEGER);
+  const visit = (items: readonly GridResolvedColumn<Row>[]): string[] =>
+    [...items]
+      .sort((left, right) => minimumIndex(left) - minimumIndex(right))
+      .flatMap((column) => (column.children?.length ? visit(column.children) : [column.id]));
+  return visit(columns);
+}
+
 function defaultColumnState<Row extends object>(
   columns: readonly GridResolvedColumn<Row>[],
   density: GridDensity,
 ): GridColumnState {
   const leaves = leafColumns(columns);
+  const defaultWidth = (column: GridResolvedColumn<Row>) =>
+    Math.min(
+      column.maxWidth || Number.MAX_SAFE_INTEGER,
+      Math.max(column.minWidth || 72, column.width || 160),
+    );
   return {
     order: leaves.map((column) => column.id),
     hidden: leaves.filter((column) => column.hidden).map((column) => column.id),
-    widths: Object.fromEntries(leaves.map((column) => [column.id, column.width || 160])),
+    widths: Object.fromEntries(leaves.map((column) => [column.id, defaultWidth(column)])),
     pinned: Object.fromEntries(
       leaves.filter((column) => column.fixed).map((column) => [column.id, column.fixed || null]),
     ),
@@ -167,14 +203,39 @@ function mergeInitialColumns(
   initial: Partial<GridColumnState> | undefined,
 ): GridColumnState {
   if (!initial) return base;
+  const requested = initial.order || base.order;
+  const order = uniqueStrings([
+    ...requested.filter((id) => base.order.includes(id)),
+    ...base.order.filter((id) => !requested.includes(id)),
+  ]);
   return {
     ...base,
     ...initial,
-    order: initial.order || base.order,
+    order,
     hidden: initial.hidden || base.hidden,
     widths: { ...base.widths, ...initial.widths },
     pinned: { ...base.pinned, ...initial.pinned },
   };
+}
+
+function rowKeySignature(key: GridRowKey): string {
+  return String(key);
+}
+
+function sameRowKey(left: GridRowKey, right: GridRowKey): boolean {
+  return rowKeySignature(left) === rowKeySignature(right);
+}
+
+function controlledDatasetMask<Value extends object>(
+  currentMask: Value | undefined,
+  nextValue: Value | undefined,
+  previousValue: Value | undefined,
+  datasetChanged: boolean,
+): Value | undefined {
+  if (currentMask) return nextValue === currentMask ? currentMask : undefined;
+  return datasetChanged && nextValue !== undefined && nextValue === previousValue
+    ? nextValue
+    : undefined;
 }
 
 function sameState<Row extends object>(left: GridState<Row>, right: GridState<Row>): boolean {
@@ -222,8 +283,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private defaultQuery: GridQuery;
   private readonly defaultColumns: GridColumnState;
   private listeners = new Set<() => void>();
-  private eventListeners = new Set<(event: GridEvent) => void>();
-  private selectedRows = new Map<GridRowKey, Row>();
+  private runtimeListeners = new Set<() => void>();
+  private eventListeners = new Set<(event: GridEvent, state: GridState<Row>) => void>();
+  private runtimeRevision = 0;
+  private selectedRows = new Map<string, Row>();
   private requestCache = new Map<string, RequestCacheEntry<Row>>();
   private optionCache = new Map<string, OptionCacheEntry>();
   private actionControllers = new Map<string, AbortController>();
@@ -234,6 +297,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private activeRequestSignature?: string;
   private requestId = 0;
   private started = false;
+  private startPromise?: Promise<void>;
   private destroyed = false;
   private lifecycleId = 0;
   private persistenceTimer?: ReturnType<typeof setTimeout>;
@@ -242,7 +306,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private batchDepth = 0;
   private pendingChanged = false;
   private pendingEvent?: GridEvent;
-  private pendingState?: GridState<Row>;
+  private pendingDesiredState?: GridState<Row>;
+  private pendingEventState?: GridState<Row>;
+  private pendingOnStateChange?: GridOptions<Row>['onStateChange'];
   private pendingPersist = false;
   private pendingLoad?: { force: boolean; reason: GridRequestReason };
   private sourceIdentity: unknown[];
@@ -250,6 +316,16 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private persistenceGeneration = 0;
   private persistenceIdentity: unknown;
   private persistenceSaveChains = new Map<unknown, Promise<void>>();
+  private maskedControlledData?: GridState<Row>['data'];
+  private maskedControlledSelection?: GridState<Row>['selection'];
+  private maskedControlledEditing?: GridState<Row>['editing'];
+  private maskedControlledActions?: GridState<Row>['actions'];
+  private maskedControlledResult?: GridReadResult<Row>;
+  private projectionRequirements = new Map<string, number>();
+  private preferenceBaseline: Pick<GridState<Row>, 'query' | 'columns' | 'views'>;
+  private preferenceVersions = { query: 0, columns: 0, views: 0 };
+  private notificationQueue: GridNotification<Row>[] = [];
+  private notifying = false;
 
   constructor(options: GridOptions<Row>) {
     validateGridTemporalContext(options.temporal);
@@ -270,7 +346,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.defaultQuery,
       options.defaultState as GridOptions<object>['defaultState'],
     );
-    const columns = mergeInitialColumns(this.defaultColumns, options.defaultState?.columns);
+    const mergedColumns = mergeInitialColumns(this.defaultColumns, options.defaultState?.columns);
+    const columns = {
+      ...mergedColumns,
+      order: canonicalColumnOrder(this.definition.columns, mergedColumns.order),
+    };
     validateGridQuery(query, this.definition, this.capabilities);
     const internalState: GridState<Row> = {
       query,
@@ -290,8 +370,13 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     };
     const state = mergeControlledState(internalState, options.state);
     this.validateStateProtocol(state, 'Grid initial state', this.definition, this.capabilities);
-    this.internalState = internalState;
+    this.internalState = { ...internalState, ...options.state };
     this.state = state;
+    this.preferenceBaseline = {
+      query: cloneJson(query),
+      columns: cloneColumnState(columns),
+      views: cloneJson(internalState.views),
+    };
     if (this.capabilities.projection) this.compileRequest(this.state.query, this.state.columns);
   }
 
@@ -301,12 +386,19 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   getState = () => this.state;
 
+  getRuntimeRevision = () => this.runtimeRevision;
+
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
 
-  subscribeEvent = (listener: (event: GridEvent) => void) => {
+  subscribeRuntime = (listener: () => void) => {
+    this.runtimeListeners.add(listener);
+    return () => this.runtimeListeners.delete(listener);
+  };
+
+  subscribeEvent = (listener: (event: GridEvent, state: GridState<Row>) => void) => {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
   };
@@ -315,23 +407,44 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     if (this.destroyed) return;
     validateGridTemporalContext(options.temporal);
     validateStateContainer(options.state, 'Grid state');
-    const resolved = resolveGridDefinition(options.definition);
-    if (resolved.id !== this.definition.id || resolved.revision !== this.definition.revision) {
-      throw new Error('Changing a grid definition requires a new GridInstance.');
-    }
-    if (definitionSignature(resolved) !== definitionSignature(this.definition)) {
-      throw new Error(
-        'Changing grid fields, columns or protocol structure requires a new definition revision.',
-      );
+    const previousOptions = this.optionsValue;
+    const definitionInputChanged = options.definition !== previousOptions.definition;
+    const resolved = definitionInputChanged
+      ? resolveGridDefinition(options.definition)
+      : this.definition;
+    if (definitionInputChanged) {
+      if (resolved.id !== this.definition.id || resolved.revision !== this.definition.revision) {
+        throw new Error('Changing a grid definition requires a new GridInstance.');
+      }
+      if (definitionSignature(resolved) !== definitionSignature(this.definition)) {
+        throw new Error(
+          'Changing grid fields, columns or protocol structure requires a new definition revision.',
+        );
+      }
+      if (
+        typeof resolved.rowKey === 'function' &&
+        typeof this.definition.rowKey === 'function' &&
+        resolved.rowKey !== this.definition.rowKey &&
+        (resolved.rowKeyIdentity === undefined ||
+          resolved.rowKeyIdentity !== this.definition.rowKeyIdentity)
+      ) {
+        throw new Error(
+          'Changing a functional grid rowKey requires a new definition revision or GridInstance.',
+        );
+      }
     }
 
-    const previousOptions = this.optionsValue;
     const previousState = this.state;
+    const previousRequestSignature = getRequestSignature(
+      this.compileRequest(previousState.query, previousState.columns),
+    );
     const previousSourceMode = previousOptions.source.mode;
     const sourceModeChanged = previousSourceMode !== options.source.mode;
     const previousSourceIdentity = this.sourceIdentity;
     const previousDatasetIdentity = this.getSourceDatasetIdentity(previousOptions.source);
     const nextCapabilities = resolveGridCapabilities(options.source);
+    const capabilitiesChanged =
+      stableStringify(this.capabilities) !== stableStringify(nextCapabilities);
     const nextSourceIdentity = sourceDataIdentity(options.source);
     const nextDatasetIdentity = this.getSourceDatasetIdentity(options.source);
     const nextPersistenceIdentity = this.getPersistenceIdentity(options.persistence);
@@ -342,11 +455,86 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       .filter((field) => this.definition.fieldMap.get(field.id)?.options !== field.options)
       .map((field) => field.id);
 
-    let nextInternal = options.state
-      ? { ...this.internalState, ...options.state }
-      : this.internalState;
-    let next = mergeControlledState(nextInternal, options.state);
+    const nextMaskedControlledData = controlledDatasetMask(
+      this.maskedControlledData,
+      options.state?.data,
+      previousOptions.state?.data,
+      datasetChanged,
+    );
+    const nextMaskedControlledSelection = controlledDatasetMask(
+      this.maskedControlledSelection,
+      options.state?.selection,
+      previousOptions.state?.selection,
+      datasetChanged,
+    );
+    const nextMaskedControlledEditing = controlledDatasetMask(
+      this.maskedControlledEditing,
+      options.state?.editing,
+      previousOptions.state?.editing,
+      datasetChanged,
+    );
+    const nextMaskedControlledActions = controlledDatasetMask(
+      this.maskedControlledActions,
+      options.state?.actions,
+      previousOptions.state?.actions,
+      datasetChanged,
+    );
+    let nextMaskedControlledResult = this.maskedControlledResult;
+    if (datasetChanged) {
+      if (!nextMaskedControlledResult) {
+        nextMaskedControlledResult =
+          previousOptions.source.mode === 'controlled' &&
+          options.source.mode === 'controlled' &&
+          options.source.result === previousOptions.source.result
+            ? options.source.result
+            : undefined;
+      } else if (
+        options.source.mode !== 'controlled' ||
+        options.source.result !== nextMaskedControlledResult
+      ) {
+        nextMaskedControlledResult = undefined;
+      }
+    } else {
+      if (
+        nextMaskedControlledResult &&
+        (options.source.mode !== 'controlled' ||
+          options.source.result !== nextMaskedControlledResult)
+      ) {
+        nextMaskedControlledResult = undefined;
+      }
+    }
     let normalizedControlledState = options.state;
+    if (
+      normalizedControlledState &&
+      ((nextMaskedControlledData && normalizedControlledState.data === nextMaskedControlledData) ||
+        (nextMaskedControlledSelection &&
+          normalizedControlledState.selection === nextMaskedControlledSelection) ||
+        (nextMaskedControlledEditing &&
+          normalizedControlledState.editing === nextMaskedControlledEditing) ||
+        (nextMaskedControlledActions &&
+          normalizedControlledState.actions === nextMaskedControlledActions))
+    ) {
+      normalizedControlledState = { ...normalizedControlledState };
+      if (normalizedControlledState.data === nextMaskedControlledData) {
+        delete normalizedControlledState.data;
+      }
+      if (normalizedControlledState.selection === nextMaskedControlledSelection) {
+        delete normalizedControlledState.selection;
+      }
+      if (normalizedControlledState.editing === nextMaskedControlledEditing) {
+        delete normalizedControlledState.editing;
+      }
+      if (normalizedControlledState.actions === nextMaskedControlledActions) {
+        delete normalizedControlledState.actions;
+      }
+    }
+    let nextInternal = normalizedControlledState
+      ? { ...this.internalState, ...normalizedControlledState }
+      : this.internalState;
+    if (persistenceChanged) {
+      nextInternal = { ...nextInternal, ...this.preferenceBaselineFor(nextCapabilities) };
+    }
+    let next = mergeControlledState(nextInternal, normalizedControlledState);
     if (
       !isPlainRecord(next.query) ||
       !isPlainRecord(next.query.pagination) ||
@@ -370,18 +558,17 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       next = { ...next, query };
       nextInternal = { ...nextInternal, query };
     }
-    const reconciledQuery = this.reconcileQueryForCapabilities(
+    if (datasetChanged && !this.isSliceControlled(normalizedControlledState, 'data')) {
+      const data = emptyData<Row>();
+      next = { ...next, data };
+      nextInternal = { ...nextInternal, data };
+    }
+    this.assertQueryCompatibleWithCapabilities(
       next.query,
       resolved,
       nextCapabilities,
+      'Grid state query',
     );
-    if (reconciledQuery !== next.query) {
-      next = { ...next, query: reconciledQuery };
-      nextInternal = { ...nextInternal, query: reconciledQuery };
-      if (this.isSliceControlled(normalizedControlledState, 'query')) {
-        normalizedControlledState = { ...normalizedControlledState, query: reconciledQuery };
-      }
-    }
     validateGridQuery(next.query, resolved, nextCapabilities);
     this.validateStateProtocol(next, 'Grid state', resolved, nextCapabilities);
     if (nextCapabilities.projection) {
@@ -396,14 +583,20 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.flushPendingPersistence(previousOptions.persistence, previousState, this.definition);
     }
 
+    this.recordPreferenceChanges(this.internalState, nextInternal);
     this.optionsValue =
       normalizedControlledState === options.state
         ? options
         : { ...options, state: normalizedControlledState };
     this.definitionValue = resolved;
-    this.capabilities = nextCapabilities;
+    this.capabilities = capabilitiesChanged ? nextCapabilities : this.capabilities;
     this.sourceIdentity = nextSourceIdentity;
     this.persistenceIdentity = nextPersistenceIdentity;
+    this.maskedControlledData = nextMaskedControlledData;
+    this.maskedControlledSelection = nextMaskedControlledSelection;
+    this.maskedControlledEditing = nextMaskedControlledEditing;
+    this.maskedControlledActions = nextMaskedControlledActions;
+    this.maskedControlledResult = nextMaskedControlledResult;
     this.internalState = nextInternal;
     this.state = next;
     if (previousState.query.pagination.type !== nextCapabilities.pagination) {
@@ -423,7 +616,15 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     }
     if (!datasetChanged) optionFieldsChanged.forEach((fieldId) => this.clearOptionCache(fieldId));
     next = this.state;
-    if (!sameState(previousState, next)) this.listeners.forEach((listener) => listener());
+    const nextRequestSignature = getRequestSignature(this.compileRequest(next.query, next.columns));
+    const externalStateChanged = !sameState(previousState, next);
+    if (definitionInputChanged || capabilitiesChanged) this.bumpRuntimeRevision();
+    const maskedControlledEntityState = Boolean(
+      nextMaskedControlledData ||
+      nextMaskedControlledSelection ||
+      nextMaskedControlledEditing ||
+      nextMaskedControlledActions,
+    );
 
     const queryChanged = previousState.query !== next.query;
     const columnsChanged = previousState.columns !== next.columns;
@@ -439,6 +640,17 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     if (sourceChanged || sourceModeChanged) {
       this.requestCache.clear();
     }
+    if (datasetChanged && maskedControlledEntityState) {
+      this.enqueueNotification(
+        externalStateChanged,
+        createGridEvent('dataset.controlled.reset', 'source'),
+        this.internalState,
+        this.optionsValue.onStateChange,
+        this.state,
+      );
+    } else if (externalStateChanged) {
+      this.enqueueNotification(true);
+    }
     if (persistenceChanged && this.started && options.persistence) {
       void this.restorePersistenceOnce().then((requestChanged) => {
         if (requestChanged && this.started && !this.destroyed) this.queueLoad(false, 'query');
@@ -446,11 +658,14 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     }
     if (!this.started) return;
     if (options.source.mode === 'controlled') {
+      const runtimeRequestChanged =
+        previousRequestSignature !== nextRequestSignature &&
+        (capabilitiesChanged || datasetChanged || sourceModeChanged);
+      if (sourceModeChanged || runtimeRequestChanged) {
+        this.notifyControlledQuery(createGridEvent('query.external', 'source'));
+      }
       if (sourceChanged || sourceModeChanged) {
         this.syncControlledSource();
-      }
-      if (sourceModeChanged) {
-        this.notifyControlledQuery(createGridEvent('query.external', 'source'));
       }
     } else if (sourceChanged || sourceModeChanged) {
       this.queueLoad(true, 'source');
@@ -461,19 +676,30 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     }
   };
 
-  start = async () => {
-    if (this.started) return;
-    if (this.destroyed) throw new Error('A destroyed GridInstance cannot be restarted.');
+  start = () => {
+    if (this.destroyed) {
+      return Promise.reject(new Error('A destroyed GridInstance cannot be restarted.'));
+    }
+    if (this.startPromise) return this.startPromise;
+    if (this.started) return Promise.resolve();
     const lifecycleId = ++this.lifecycleId;
     this.started = true;
-    await this.restorePersistenceOnce();
-    if (this.destroyed || lifecycleId !== this.lifecycleId) return;
-    await this.load(false, 'initial');
+    const promise = (async () => {
+      await this.restorePersistenceOnce();
+      if (this.destroyed || lifecycleId !== this.lifecycleId) return;
+      await this.load(false, 'initial');
+    })();
+    const tracked = promise.finally(() => {
+      if (this.startPromise === tracked) this.startPromise = undefined;
+    });
+    this.startPromise = tracked;
+    return tracked;
   };
 
   stop = () => {
     const wasStarted = this.started;
     this.started = false;
+    this.startPromise = undefined;
     if (wasStarted) this.lifecycleId += 1;
     if (this.persistencePromise) {
       this.persistenceGeneration += 1;
@@ -495,10 +721,28 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     const pendingActions = Object.fromEntries(
       Object.keys(this.state.actions.pending).map((key) => [key, false]),
     );
-    if (this.state.editing.saving || Object.values(this.state.actions.pending).some(Boolean)) {
+    const dataWasFetching = this.state.data.fetching || this.state.data.status === 'loading';
+    if (
+      dataWasFetching ||
+      this.state.editing.saving ||
+      Object.values(this.state.actions.pending).some(Boolean)
+    ) {
       this.commit(
         {
           ...this.internalState,
+          data: dataWasFetching
+            ? {
+                ...this.state.data,
+                status:
+                  this.state.data.status === 'loading'
+                    ? this.state.data.rows.length
+                      ? 'success'
+                      : 'idle'
+                    : this.state.data.status,
+                fetching: false,
+                requestId: undefined,
+              }
+            : this.internalState.data,
           editing: { saving: false },
           actions: { ...this.state.actions, pending: pendingActions },
         },
@@ -506,10 +750,28 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     }
     if (this.persistenceTimer) {
+      void this.flushPersistence();
+    }
+  };
+
+  flushPersistence = async () => {
+    const persistence = this.optionsValue.persistence;
+    let immediate: Promise<void> | undefined;
+    if (this.persistenceTimer) {
       clearTimeout(this.persistenceTimer);
       this.persistenceTimer = undefined;
-      void this.persist();
+      if (persistence) {
+        const definition = this.definition;
+        immediate = this.enqueuePersistenceSave(
+          persistence,
+          this.createPersistedState(this.state, definition),
+          definition,
+        );
+      }
     }
+    if (immediate) await immediate;
+    const pending = [...this.persistenceSaveChains.values()];
+    if (pending.length) await Promise.all(pending);
   };
 
   destroy = () => {
@@ -517,7 +779,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     this.stop();
     this.destroyed = true;
     this.listeners.clear();
+    this.runtimeListeners.clear();
     this.eventListeners.clear();
+    this.projectionRequirements.clear();
+    this.notificationQueue = [];
   };
 
   batch = (callback: () => void) => {
@@ -625,10 +890,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       }
       const leaves = leafColumns(this.definition.columns);
       const known = new Set(leaves.map((column) => column.id));
-      const order = uniqueStrings(columnIds.filter((id) => known.has(id)));
-      leaves.forEach((column) => {
-        if (!order.includes(column.id)) order.push(column.id);
-      });
+      const order = canonicalColumnOrder(
+        this.definition.columns,
+        uniqueStrings(columnIds.filter((id) => known.has(id))),
+      );
       leaves.forEach((column) => {
         if (column.reorderable === false) {
           const previousIndex = this.state.columns.order.indexOf(column.id);
@@ -695,32 +960,36 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       if (!Array.isArray(keys) || !Array.isArray(rows)) {
         throw new Error('Grid selection keys and rows must be arrays.');
       }
-      const validKeys = keys.filter(isValidGridRowKey);
+      validateKeyList(keys, 'Grid selection keys');
+      const validKeys = [...keys];
       const rowEntries = rows.map((row) => [this.definition.getRowKey(row), row] as const);
       if (this.state.selection.mode !== 'allMatching') {
-        rowEntries.forEach(([key, row]) => this.selectedRows.set(key, row));
+        rowEntries.forEach(([key, row]) => this.selectedRows.set(rowKeySignature(key), row));
       }
       if (this.state.selection.mode === 'allMatching') {
-        const selected = new Set(validKeys);
+        const selected = new Set(validKeys.map(rowKeySignature));
         const currentKeys = this.state.data.rows.map(this.definition.getRowKey);
-        const excluded = new Set(this.state.selection.excludedKeys);
+        const excluded = new Map(
+          this.state.selection.excludedKeys.map((key) => [rowKeySignature(key), key]),
+        );
         currentKeys.forEach((key) => {
-          if (selected.has(key)) excluded.delete(key);
-          else excluded.add(key);
+          const signature = rowKeySignature(key);
+          if (selected.has(signature)) excluded.delete(signature);
+          else excluded.set(signature, key);
         });
-        this.setSelection({ ...this.state.selection, excludedKeys: [...excluded] });
+        this.setSelection({ ...this.state.selection, excludedKeys: [...excluded.values()] });
         return;
       }
-      const keySet = new Set(validKeys);
+      const keySet = new Map(validKeys.map((key) => [rowKeySignature(key), key]));
       [...this.selectedRows.keys()].forEach((key) => {
         if (!keySet.has(key)) this.selectedRows.delete(key);
       });
-      this.setSelection({ mode: 'explicit', selectedKeys: [...keySet] });
+      this.setSelection({ mode: 'explicit', selectedKeys: [...keySet.values()] });
     },
     toggle: (key: GridRowKey, row: Row, selected?: boolean) => {
       if (!isValidGridRowKey(key)) throw new Error('Grid selection requires a valid row key.');
       const rowKey = this.definition.getRowKey(row);
-      if (rowKey !== key) {
+      if (!sameRowKey(rowKey, key)) {
         throw new Error(
           `Selected row key ${typeof rowKey}:${String(rowKey)} does not match selection key ${typeof key}:${String(key)}.`,
         );
@@ -728,32 +997,38 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const current = this.selection.isSelected(key);
       const nextSelected = selected ?? !current;
       if (this.state.selection.mode === 'allMatching') {
-        const excluded = new Set(this.state.selection.excludedKeys);
-        if (nextSelected) excluded.delete(key);
-        else excluded.add(key);
-        this.setSelection({ ...this.state.selection, excludedKeys: [...excluded] });
+        const excluded = new Map(
+          this.state.selection.excludedKeys.map((item) => [rowKeySignature(item), item]),
+        );
+        if (nextSelected) excluded.delete(rowKeySignature(key));
+        else excluded.set(rowKeySignature(key), key);
+        this.setSelection({ ...this.state.selection, excludedKeys: [...excluded.values()] });
         return;
       }
-      this.selectedRows.set(key, row);
-      const keys = new Set(this.state.selection.selectedKeys);
-      if (nextSelected) keys.add(key);
+      this.selectedRows.set(rowKeySignature(key), row);
+      const keys = new Map(
+        this.state.selection.selectedKeys.map((item) => [rowKeySignature(item), item]),
+      );
+      if (nextSelected) keys.set(rowKeySignature(key), key);
       else {
-        keys.delete(key);
-        this.selectedRows.delete(key);
+        keys.delete(rowKeySignature(key));
+        this.selectedRows.delete(rowKeySignature(key));
       }
-      this.setSelection({ mode: 'explicit', selectedKeys: [...keys] });
+      this.setSelection({ mode: 'explicit', selectedKeys: [...keys.values()] });
     },
     selectPage: (rows: readonly Row[] = this.state.data.rows) => {
       if (!Array.isArray(rows)) throw new Error('Selected page rows must be an array.');
       const entries = rows.map((row) => [this.definition.getRowKey(row), row] as const);
       const keys = entries.map(([key]) => key);
       if (this.state.selection.mode !== 'allMatching') {
-        entries.forEach(([key, row]) => this.selectedRows.set(key, row));
+        entries.forEach(([key, row]) => this.selectedRows.set(rowKeySignature(key), row));
       }
       if (this.state.selection.mode === 'allMatching') {
-        const excluded = new Set(this.state.selection.excludedKeys);
-        keys.forEach((key) => excluded.delete(key));
-        this.setSelection({ ...this.state.selection, excludedKeys: [...excluded] });
+        const excluded = new Map(
+          this.state.selection.excludedKeys.map((key) => [rowKeySignature(key), key]),
+        );
+        keys.forEach((key) => excluded.delete(rowKeySignature(key)));
+        this.setSelection({ ...this.state.selection, excludedKeys: [...excluded.values()] });
       } else {
         this.setSelection({
           mode: 'explicit',
@@ -782,8 +1057,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     isSelected: (key: GridRowKey) => {
       const selection = this.state.selection;
       return selection.mode === 'explicit'
-        ? selection.selectedKeys.includes(key)
-        : selection.querySignature === this.requestScope() && !selection.excludedKeys.includes(key);
+        ? selection.selectedKeys.some((item) => sameRowKey(item, key))
+        : selection.querySignature === this.requestScope() &&
+            !selection.excludedKeys.some((item) => sameRowKey(item, key));
     },
     getCount: () => {
       const selection = this.state.selection;
@@ -796,10 +1072,13 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     getSelectedRows: () => {
       if (this.state.selection.mode === 'allMatching') return [];
       const currentRows = new Map(
-        this.state.data.rows.map((row) => [this.definition.getRowKey(row), row]),
+        this.state.data.rows.map((row) => [rowKeySignature(this.definition.getRowKey(row)), row]),
       );
       return this.state.selection.selectedKeys
-        .map((key) => currentRows.get(key) || this.selectedRows.get(key))
+        .map(
+          (key) =>
+            currentRows.get(rowKeySignature(key)) || this.selectedRows.get(rowKeySignature(key)),
+        )
         .filter((row): row is Row => Boolean(row));
     },
   };
@@ -812,16 +1091,18 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     },
     updateRow: (key: GridRowKey, row: Row) => {
       const replacementKey = this.definition.getRowKey(row);
-      if (replacementKey !== key) {
+      if (!sameRowKey(replacementKey, key)) {
         throw new Error(
           `Grid row replacement key ${typeof replacementKey}:${String(replacementKey)} does not match target key ${typeof key}:${String(key)}.`,
         );
       }
       const rows = this.state.data.rows.map((current) =>
-        this.definition.getRowKey(current) === key ? row : current,
+        sameRowKey(this.definition.getRowKey(current), key) ? row : current,
       );
-      if (!rows.some((current) => this.definition.getRowKey(current) === key)) return;
-      if (this.selectedRows.has(key)) this.selectedRows.set(key, row);
+      if (!rows.some((current) => sameRowKey(this.definition.getRowKey(current), key))) return;
+      if (this.selectedRows.has(rowKeySignature(key))) {
+        this.selectedRows.set(rowKeySignature(key), row);
+      }
       this.requestCache.clear();
       this.commit(
         { ...this.internalState, data: { ...this.state.data, rows } },
@@ -829,7 +1110,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     patchRow: (key: GridRowKey, patch: Partial<Row>) => {
-      const current = this.state.data.rows.find((row) => this.definition.getRowKey(row) === key);
+      const current = this.state.data.rows.find((row) =>
+        sameRowKey(this.definition.getRowKey(row), key),
+      );
       if (current) this.data.updateRow(key, { ...current, ...patch });
     },
   };
@@ -940,9 +1223,16 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const view = id ? this.state.views.items.find((item) => item.id === id) : undefined;
       if (id && !view) return;
       const pagination = this.resetPagination(this.state.query.pagination);
-      const query: GridQuery = view
+      const candidateQuery: GridQuery = view
         ? { ...cloneJson(view.query), pagination }
         : { ...cloneJson(this.defaultQuery), pagination };
+      this.assertQueryCompatibleWithCapabilities(
+        candidateQuery,
+        this.definition,
+        this.capabilities,
+        view ? `Grid view "${view.name}"` : 'Default grid view',
+      );
+      const query = candidateQuery;
       const columns = view
         ? this.reconcileColumns(view.columns)
         : cloneColumnState(this.defaultColumns);
@@ -1043,8 +1333,8 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const editing = this.definition.editing;
       if (!active || !editing || this.state.editing.saving) return false;
       const field = this.definition.fieldMap.get(active.fieldId);
-      const row = this.state.data.rows.find(
-        (item) => this.definition.getRowKey(item) === active.rowKey,
+      const row = this.state.data.rows.find((item) =>
+        sameRowKey(this.definition.getRowKey(item), active.rowKey),
       );
       if (!field || !row) return false;
       this.editController?.abort();
@@ -1171,7 +1461,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
           : actionOrId;
       if (!action) throw new Error(`Unknown grid action: ${String(actionOrId)}`);
       const key = this.actions.key(action.id, input.row);
-      if (this.state.actions.pending[key]) return;
+      if (this.actionControllers.has(key) || this.state.actions.pending[key]) return;
       const baseContext = this.actions.getContext(input.row, input.field, input.value);
       const visible =
         typeof action.visible === 'function'
@@ -1223,13 +1513,14 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     key: (actionId: string, row?: Row) => {
       if (!row) return stableStringify(['grid-action', actionId]);
       const rowKey = this.definition.getRowKey(row);
-      return stableStringify(['row-action', actionId, typeof rowKey, rowKey]);
+      return stableStringify(['row-action', actionId, rowKeySignature(rowKey)]);
     },
   };
 
   options = {
     load: async (fieldId: string, search = '', options: { signal?: AbortSignal } = {}) => {
       if (this.destroyed) throw new Error('A destroyed GridInstance cannot load options.');
+      if (typeof search !== 'string') throw new Error('Grid option search must be a string.');
       const field = this.definition.fieldMap.get(fieldId);
       if (!field) throw new Error(`Unknown grid field: ${fieldId}`);
       const normalizedSearch = search.trim().toLocaleLowerCase();
@@ -1253,7 +1544,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const provider =
         typeof field.options === 'function' ? { load: field.options } : field.options;
       const dependency = this.optionDependency(provider.dependsOn);
-      const key = stableStringify([fieldId, normalizedSearch, dependency]);
+      const key = stableStringify([fieldId, search, dependency]);
       const cached = this.optionCache.get(key);
       const cacheTime = provider.cacheTime ?? 30_000;
       if (cacheTime > 0 && cached?.value && Date.now() - cached.createdAt <= cacheTime) {
@@ -1323,8 +1614,75 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     clear: (fieldId?: string) => this.clearOptionCache(fieldId),
   };
 
+  projection: GridProjectionApi = {
+    register: (fieldIds) => {
+      if (this.destroyed) {
+        throw new Error('A destroyed GridInstance cannot register projection requirements.');
+      }
+      if (!Array.isArray(fieldIds)) {
+        throw new Error('Grid projection requirements must be an array of field ids.');
+      }
+      const fields = uniqueStrings([...fieldIds]);
+      if (
+        fields.length !== fieldIds.length ||
+        fields.some(
+          (fieldId) => typeof fieldId !== 'string' || !this.definition.fieldMap.has(fieldId),
+        )
+      ) {
+        throw new Error('Grid projection requirements must contain unique known field ids.');
+      }
+      const previousRequest = this.capabilities.projection
+        ? getRequestSignature(this.compileRequest())
+        : undefined;
+      const requirementsChanged = fields.some(
+        (fieldId) => !this.projectionRequirements.has(fieldId),
+      );
+      fields.forEach((fieldId) => {
+        this.projectionRequirements.set(
+          fieldId,
+          (this.projectionRequirements.get(fieldId) || 0) + 1,
+        );
+      });
+      this.projectionRequirementsChanged(previousRequest, requirementsChanged);
+      let registered = true;
+      return () => {
+        if (!registered) return;
+        registered = false;
+        if (this.destroyed) return;
+        const before = this.capabilities.projection
+          ? getRequestSignature(this.compileRequest())
+          : undefined;
+        const requirementsChanged = fields.some(
+          (fieldId) => this.projectionRequirements.get(fieldId) === 1,
+        );
+        fields.forEach((fieldId) => {
+          const count = this.projectionRequirements.get(fieldId) || 0;
+          if (count <= 1) this.projectionRequirements.delete(fieldId);
+          else this.projectionRequirements.set(fieldId, count - 1);
+        });
+        this.projectionRequirementsChanged(before, requirementsChanged);
+      };
+    },
+    getRequiredFields: () => [...this.projectionRequirements.keys()],
+  };
+
   private isControlled(slice: keyof GridState<Row>): boolean {
     return this.isSliceControlled(this.optionsValue.state, slice);
+  }
+
+  private projectionRequirementsChanged(
+    previousRequest: string | undefined,
+    requirementsChanged: boolean,
+  ): void {
+    if (this.destroyed) return;
+    if (requirementsChanged) this.bumpRuntimeRevision();
+    if (!this.capabilities.projection || previousRequest === undefined) return;
+    const nextRequest = getRequestSignature(this.compileRequest());
+    if (previousRequest === nextRequest) return;
+    if (!this.started) return;
+    const event = createGridEvent('projection.requirements.change', 'system');
+    if (this.optionsValue.source.mode === 'controlled') this.notifyControlledQuery(event);
+    else this.queueLoad(false, 'projection');
   }
 
   private reconcileQueryForCapabilities(
@@ -1365,9 +1723,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         if (node.type === 'condition') {
           if (depth + 1 > capabilities.filter.maxDepth || remainingConditions <= 0) continue;
           const field = definition.fieldMap.get(node.fieldId);
-          if (!field?.filter) continue;
+          if (!field?.filter) {
+            throw new Error(`Field "${String(node.fieldId)}" is not filterable.`);
+          }
           if (field.filter.operators && !field.filter.operators.includes(node.operator)) {
-            continue;
+            throw new Error(`Operator "${node.operator}" is not available for "${node.fieldId}".`);
           }
           if (
             capabilities.filter.operators &&
@@ -1406,7 +1766,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         ) {
           throw new Error('Grid state query contains an invalid sort declaration.');
         }
-        return Boolean(definition.fieldMap.get(sort.fieldId)?.sort);
+        const field = definition.fieldMap.get(sort.fieldId);
+        if (!field?.sort) throw new Error(`Field "${sort.fieldId}" is not sortable.`);
+        return true;
       })
       .slice(0, capabilities.sort.max)
       .map((sort) => {
@@ -1427,6 +1789,18 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     return { ...query, keyword, filters, sorts };
   }
 
+  private assertQueryCompatibleWithCapabilities(
+    query: GridQuery,
+    definition: GridResolvedDefinition<Row>,
+    capabilities: GridResolvedCapabilities,
+    label: string,
+  ): void {
+    const reconciled = this.reconcileQueryForCapabilities(query, definition, capabilities);
+    if (stableStringify(reconciled) !== stableStringify(query)) {
+      throw new Error(`${label} conflicts with the current grid source capabilities.`);
+    }
+  }
+
   private validateStateProtocol(
     state: GridState<Row>,
     label: string,
@@ -1437,17 +1811,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     validateGridQuery(state.query, definition, capabilities);
     validateColumnState(state.columns, `${label}.columns`, definition);
     validateSelectionState(state.selection, `${label}.selection`);
-    validateViewState(state.views, `${label}.views`, definition);
-    validateDataState(state.data, `${label}.data`, definition);
-    if (
-      !isPlainRecord(state.editing) ||
-      typeof state.editing.saving !== 'boolean' ||
-      !isPlainRecord(state.actions) ||
-      !isPlainRecord(state.actions.pending) ||
-      !isPlainRecord(state.actions.errors)
-    ) {
-      throw new Error(`${label} editing/actions slices do not match the grid state protocol.`);
-    }
+    validateViewState(state.views, `${label}.views`, definition, capabilities);
+    validateDataState(state.data, `${label}.data`, definition, state.query.pagination);
+    validateEditingState(state.editing, `${label}.editing`, definition);
+    validateActionState(state.actions, `${label}.actions`);
   }
 
   private isSliceControlled(
@@ -1471,6 +1838,22 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     return persistence.identity !== undefined ? persistence.identity : persistence;
   }
 
+  private preferenceBaselineFor(
+    capabilities: GridResolvedCapabilities,
+  ): Pick<GridState<Row>, 'query' | 'columns' | 'views'> {
+    const query = cloneJson(this.preferenceBaseline.query);
+    const pageSize = query.pagination.pageSize;
+    query.pagination =
+      capabilities.pagination === 'cursor'
+        ? { type: 'cursor', pageSize }
+        : { type: 'offset', page: 1, pageSize };
+    return {
+      query,
+      columns: cloneColumnState(this.preferenceBaseline.columns),
+      views: cloneJson(this.preferenceBaseline.views),
+    };
+  }
+
   private invalidateReadRequest(): void {
     this.requestController?.abort();
     this.requestController = undefined;
@@ -1492,13 +1875,15 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     const rollback = this.editRollback;
     this.editRollback = undefined;
     if (!rollback) return state;
-    const index = state.data.rows.findIndex(
-      (row) => this.definition.getRowKey(row) === rollback.key,
+    const index = state.data.rows.findIndex((row) =>
+      sameRowKey(this.definition.getRowKey(row), rollback.key),
     );
     if (index < 0 || state.data.rows[index] !== rollback.optimisticRow) return state;
     const rows = [...state.data.rows];
     rows[index] = rollback.row;
-    if (this.selectedRows.has(rollback.key)) this.selectedRows.set(rollback.key, rollback.row);
+    if (this.selectedRows.has(rowKeySignature(rollback.key))) {
+      this.selectedRows.set(rowKeySignature(rollback.key), rollback.row);
+    }
     this.requestCache.clear();
     return { ...state, data: { ...state.data, rows } };
   }
@@ -1519,11 +1904,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     );
     this.internalState = {
       ...rolledBack,
+      data: emptyData<Row>(),
       selection: this.isControlled('selection')
         ? rolledBack.selection
         : { mode: 'explicit', selectedKeys: [] },
       editing: { saving: false },
-      actions: { ...rolledBack.actions, pending },
+      actions: { pending, errors: {} },
     };
     this.state = mergeControlledState(this.internalState, this.optionsValue.state);
   }
@@ -1707,9 +2093,87 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     );
   }
 
+  private recordPreferenceChanges(previous: GridState<Row>, next: GridState<Row>): void {
+    if (previous.query !== next.query) this.preferenceVersions.query += 1;
+    if (previous.columns !== next.columns) this.preferenceVersions.columns += 1;
+    if (previous.views !== next.views) this.preferenceVersions.views += 1;
+  }
+
+  private reportObserverError(error: unknown, sourceEvent?: GridEvent): void {
+    if (this.destroyed) return;
+    const normalized = normalizeError(error, 'Grid observer failed.');
+    try {
+      this.optionsValue.onError?.(
+        normalized,
+        createGridEvent('observer.error', 'system', { sourceEvent: sourceEvent?.type }),
+      );
+    } catch {
+      // Observer failures must not corrupt an already committed state transition.
+    }
+  }
+
+  private bumpRuntimeRevision(): void {
+    if (this.destroyed) return;
+    this.runtimeRevision += 1;
+    [...this.runtimeListeners].forEach((listener) => {
+      try {
+        listener();
+      } catch (error) {
+        this.reportObserverError(error);
+      }
+    });
+  }
+
+  private enqueueNotification(
+    changed: boolean,
+    event?: GridEvent,
+    desiredState?: GridState<Row>,
+    onStateChange?: GridOptions<Row>['onStateChange'],
+    eventState?: GridState<Row>,
+  ): void {
+    if (this.destroyed) return;
+    this.notificationQueue.push({ changed, event, desiredState, eventState, onStateChange });
+    if (this.notifying) return;
+    this.notifying = true;
+    try {
+      while (this.notificationQueue.length && !this.destroyed) {
+        const notification = this.notificationQueue.shift()!;
+        if (notification.changed) {
+          [...this.listeners].forEach((listener) => {
+            try {
+              listener();
+            } catch (error) {
+              this.reportObserverError(error, notification.event);
+            }
+          });
+        }
+        if (notification.event) {
+          [...this.eventListeners].forEach((listener) => {
+            try {
+              listener(notification.event!, notification.eventState!);
+            } catch (error) {
+              this.reportObserverError(error, notification.event);
+            }
+          });
+          if (notification.desiredState) {
+            try {
+              notification.onStateChange?.(notification.desiredState, notification.event);
+            } catch (error) {
+              this.reportObserverError(error, notification.event);
+            }
+          }
+        }
+      }
+    } finally {
+      this.notifying = false;
+      if (this.destroyed) this.notificationQueue = [];
+    }
+  }
+
   private commit(next: GridState<Row>, event: GridEvent, persist = false): void {
     if (this.destroyed || next === this.internalState) return;
     const previousEffective = this.state;
+    this.recordPreferenceChanges(this.internalState, next);
     this.internalState = next;
     const effective = mergeControlledState(next, this.optionsValue.state);
     this.state = effective;
@@ -1717,34 +2181,34 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     if (this.batchDepth > 0) {
       this.pendingChanged ||= changed;
       this.pendingEvent = event;
-      this.pendingState = next;
+      this.pendingDesiredState = next;
+      this.pendingEventState = effective;
+      this.pendingOnStateChange = this.optionsValue.onStateChange;
       this.pendingPersist ||= persist;
       return;
     }
-    if (changed) this.listeners.forEach((listener) => listener());
-    this.eventListeners.forEach((listener) => listener(event));
-    this.optionsValue.onStateChange?.(next, event);
     if (persist) this.schedulePersistence();
+    this.enqueueNotification(changed, event, next, this.optionsValue.onStateChange, effective);
   }
 
   private flushBatch(): void {
     const event = this.pendingEvent;
-    const state = this.pendingState;
+    const desiredState = this.pendingDesiredState;
+    const eventState = this.pendingEventState;
+    const onStateChange = this.pendingOnStateChange;
     const changed = this.pendingChanged;
     const persist = this.pendingPersist;
     const load = this.pendingLoad;
     this.pendingChanged = false;
     this.pendingEvent = undefined;
-    this.pendingState = undefined;
+    this.pendingDesiredState = undefined;
+    this.pendingEventState = undefined;
+    this.pendingOnStateChange = undefined;
     this.pendingPersist = false;
     this.pendingLoad = undefined;
     if (this.destroyed) return;
-    if (changed) this.listeners.forEach((listener) => listener());
-    if (event) {
-      this.eventListeners.forEach((listener) => listener(event));
-      if (state) this.optionsValue.onStateChange?.(state, event);
-    }
     if (persist) this.schedulePersistence();
+    this.enqueueNotification(changed, event, desiredState, onStateChange, eventState);
     if (load) void this.load(load.force, load.reason);
   }
 
@@ -1772,12 +2236,17 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     explicit?: string[],
     definition: GridResolvedDefinition<Row> = this.definition,
   ): string[] {
-    if (explicit !== undefined) return explicit;
+    if (explicit !== undefined) {
+      return uniqueStrings([...explicit, ...this.projectionRequirements.keys()]);
+    }
     const hidden = new Set(columns.hidden);
-    return columns.order
-      .filter((id) => !hidden.has(id))
-      .map((id) => definition.columnMap.get(id)?.fieldId)
-      .filter((id): id is string => Boolean(id));
+    return uniqueStrings([
+      ...columns.order
+        .filter((id) => !hidden.has(id))
+        .map((id) => definition.columnMap.get(id)?.fieldId)
+        .filter((id): id is string => Boolean(id)),
+      ...this.projectionRequirements.keys(),
+    ]);
   }
 
   private requestScope(query = this.state.query, columns = this.state.columns): string {
@@ -1914,10 +2383,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     const result = this.normalizeFacets(normalizeGridResult(input, this.state.query.pagination));
     this.validateRows(result.rows);
     const selection = this.reconcileSelection(result);
+    const editing = this.reconcileEditing(result.rows);
     this.commit(
       {
         ...this.internalState,
         selection,
+        editing,
         data: {
           ...result,
           status: 'success',
@@ -1929,6 +2400,17 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       },
       createGridEvent('data.load.success', 'source', { reason, requestId: state?.requestId }),
     );
+  }
+
+  private reconcileEditing(rows: readonly Row[]): GridState<Row>['editing'] {
+    const active = this.state.editing.active;
+    if (!active || rows.some((row) => sameRowKey(this.definition.getRowKey(row), active.rowKey))) {
+      return this.internalState.editing;
+    }
+    this.editController?.abort();
+    this.editController = undefined;
+    this.editRollback = undefined;
+    return { saving: false };
   }
 
   private applyRequestError(error: Error, reason: GridRequestReason, requestId?: number): void {
@@ -1985,20 +2467,26 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private reconcileSelection(result: GridReadResult<Row>): GridSelectionState {
     const selection = this.state.selection;
     if (selection.mode === 'explicit') {
-      const selected = new Set(selection.selectedKeys);
+      const selected = new Set(selection.selectedKeys.map(rowKeySignature));
       result.rows.forEach((row) => {
         const key = this.definition.getRowKey(row);
-        if (selected.has(key)) this.selectedRows.set(key, row);
+        if (selected.has(rowKeySignature(key))) {
+          this.selectedRows.set(rowKeySignature(key), row);
+        }
       });
 
       const source = this.optionsValue.source;
       if (source.mode !== 'local') return selection;
-      const available = new Set(source.rows.map(this.definition.getRowKey));
+      const available = new Set(
+        source.rows.map((row) => rowKeySignature(this.definition.getRowKey(row))),
+      );
       [...this.selectedRows.keys()].forEach((key) => {
         if (!available.has(key)) this.selectedRows.delete(key);
       });
       if (this.isControlled('selection')) return selection;
-      const selectedKeys = selection.selectedKeys.filter((key) => available.has(key));
+      const selectedKeys = selection.selectedKeys.filter((key) =>
+        available.has(rowKeySignature(key)),
+      );
       return shallowArrayEqual(selectedKeys, selection.selectedKeys)
         ? selection
         : { mode: 'explicit', selectedKeys };
@@ -2017,8 +2505,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     let excludedKeys = uniqueRowKeys(selection.excludedKeys);
     const source = this.optionsValue.source;
     if (source.mode === 'local') {
-      const available = new Set(source.rows.map(this.definition.getRowKey));
-      excludedKeys = excludedKeys.filter((key) => available.has(key));
+      const available = new Set(
+        source.rows.map((row) => rowKeySignature(this.definition.getRowKey(row))),
+      );
+      excludedKeys = excludedKeys.filter((key) => available.has(rowKeySignature(key)));
     }
     if (this.isControlled('selection')) return selection;
     return exactTotal === selection.total && shallowArrayEqual(excludedKeys, selection.excludedKeys)
@@ -2041,12 +2531,20 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private syncControlledSource(): void {
     const source = this.optionsValue.source;
     if (source.mode !== 'controlled') return;
+    if (
+      this.maskedControlledResult &&
+      source.result === this.maskedControlledResult &&
+      !this.isControlled('data')
+    ) {
+      return;
+    }
     let result: GridReadResult<Row>;
     try {
       result = this.normalizeFacets(
         normalizeGridResult(source.result, this.state.query.pagination),
       );
       this.validateRows(result.rows);
+      if (this.correctOutOfRangePage(result)) return;
     } catch (error) {
       this.applyRequestError(normalizeError(error), 'source');
       return;
@@ -2060,6 +2558,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       updatedAt: error || source.loading ? this.state.data.updatedAt : Date.now(),
     };
     const selection = this.reconcileSelection(result);
+    const editing = this.reconcileEditing(result.rows);
     const current = this.state.data;
     const same =
       current.rows === data.rows &&
@@ -2073,7 +2572,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       current.error?.message === data.error?.message;
     if (same && selection === this.state.selection) return;
     this.commit(
-      { ...this.internalState, selection, data },
+      { ...this.internalState, selection, editing, data },
       createGridEvent('data.controlled.sync', 'source'),
     );
   }
@@ -2160,10 +2659,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   private reconcileColumns(columns: GridColumnState): GridColumnState {
     const known = new Set(leafColumns(this.definition.columns).map((column) => column.id));
-    const order = uniqueStrings(columns.order.filter((id) => known.has(id)));
-    this.defaultColumns.order.forEach((id) => {
-      if (!order.includes(id)) order.push(id);
-    });
+    const order = canonicalColumnOrder(
+      this.definition.columns,
+      uniqueStrings(columns.order.filter((id) => known.has(id))),
+    );
     return {
       order,
       hidden: uniqueStrings([
@@ -2295,6 +2794,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     generation: number,
   ): Promise<boolean> {
     const definition = this.definition;
+    const restoreVersions = { ...this.preferenceVersions };
     const sessionIsCurrent = () =>
       generation === this.persistenceGeneration &&
       this.getPersistenceIdentity(this.optionsValue.persistence) === this.persistenceIdentity &&
@@ -2325,20 +2825,48 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         throw new Error('Migrated grid preferences do not match the current grid revision.');
       }
 
-      const active = persisted.activeViewId
-        ? persisted.views.find((view) => view.id === persisted.activeViewId)
-        : undefined;
-      const columns = this.reconcileColumns(active?.columns || persisted.columns);
+      const viewsWereUntouched = restoreVersions.views === this.preferenceVersions.views;
+      const active =
+        viewsWereUntouched && persisted.activeViewId
+          ? persisted.views.find((view) => view.id === persisted.activeViewId)
+          : undefined;
+      const activeWasUntouched = Boolean(
+        active &&
+        restoreVersions.query === this.preferenceVersions.query &&
+        restoreVersions.columns === this.preferenceVersions.columns,
+      );
       const pagination = this.resetPagination(this.state.query.pagination);
-      const query: GridQuery = active
-        ? { ...cloneJson(active.query), pagination }
-        : this.state.query;
+      let activeQuery: GridQuery | undefined;
+      if (active && activeWasUntouched) {
+        const candidate = { ...cloneJson(active.query), pagination };
+        const reconciled = this.reconcileQueryForCapabilities(
+          candidate,
+          definition,
+          this.capabilities,
+        );
+        if (stableStringify(queryWithoutPagination(reconciled)) === stableStringify(active.query)) {
+          activeQuery = reconciled;
+        }
+      }
+      const canApplyActive = Boolean(activeQuery);
+      const rejectedActive = Boolean(active && activeWasUntouched && !activeQuery);
+      const columns =
+        restoreVersions.columns === this.preferenceVersions.columns
+          ? this.reconcileColumns(
+              (canApplyActive ? active?.columns : undefined) || persisted.columns,
+            )
+          : this.internalState.columns;
+      const query: GridQuery =
+        activeQuery ||
+        (rejectedActive
+          ? { ...cloneJson(this.defaultQuery), pagination }
+          : this.internalState.query);
       validateGridQuery(query, definition, this.capabilities);
       const previousRequest = getRequestSignature(this.compileRequest());
       const previousScope = this.requestScope();
       const nextScope = this.requestScope(query, columns);
       if (previousScope !== nextScope) this.selectedRows.clear();
-      const next: GridState<Row> = {
+      let next: GridState<Row> = {
         ...this.internalState,
         query,
         columns,
@@ -2347,11 +2875,14 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
             ? { mode: 'explicit', selectedKeys: [] }
             : this.internalState.selection,
         views: {
-          activeId: active?.id,
-          items: persisted.views,
-          dirty: false,
+          activeId:
+            viewsWereUntouched && canApplyActive ? active?.id : this.internalState.views.activeId,
+          items: viewsWereUntouched ? persisted.views : this.internalState.views.items,
+          dirty: viewsWereUntouched ? false : this.internalState.views.dirty,
         },
       };
+      next = this.withViewDirty(next);
+      this.validateStateProtocol(next, 'Persisted grid state', definition, this.capabilities);
       this.commit(next, createGridEvent('persistence.restore', 'restore'));
       return previousRequest !== getRequestSignature(this.compileRequest());
     } catch (error) {
@@ -2364,7 +2895,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   private reportError(error: Error, event: GridEvent): void {
     if (this.destroyed) return;
-    this.optionsValue.onError?.(error, event);
+    try {
+      this.optionsValue.onError?.(error, event);
+    } catch {
+      // Error observers cannot change the outcome of the operation being reported.
+    }
   }
 }
 
@@ -2408,14 +2943,28 @@ function validateColumnState<Row extends object>(
       throw new Error(`${label}.${key} must contain unique known leaf column ids.`);
     }
   }
+  if ((value.order as string[]).length !== known.size) {
+    throw new Error(`${label}.order must contain every leaf column exactly once.`);
+  }
+  const canonicalOrder = canonicalColumnOrder(definition.columns, value.order as string[]);
+  if (!shallowArrayEqual(canonicalOrder, value.order as string[])) {
+    throw new Error(`${label}.order cannot interleave leaves from different column groups.`);
+  }
   if (!isPlainRecord(value.widths) || !isPlainRecord(value.pinned)) {
     throw new Error(`${label} widths and pinned values must be objects.`);
   }
   if (
-    Object.entries(value.widths).some(
-      ([id, width]) =>
-        !known.has(id) || typeof width !== 'number' || !Number.isFinite(width) || width <= 0,
-    )
+    Object.entries(value.widths).some(([id, width]) => {
+      const column = definition.columnMap.get(id);
+      return (
+        !known.has(id) ||
+        typeof width !== 'number' ||
+        !Number.isFinite(width) ||
+        width <= 0 ||
+        Boolean(column?.minWidth && width < column.minWidth) ||
+        Boolean(column?.maxWidth && width > column.maxWidth)
+      );
+    })
   ) {
     throw new Error(`${label}.widths contains an invalid column width.`);
   }
@@ -2452,7 +3001,7 @@ function validateKeyList(value: unknown, label: string): asserts value is GridRo
   if (!Array.isArray(value) || value.some((key) => !isValidGridRowKey(key))) {
     throw new Error(`${label} must contain valid row keys.`);
   }
-  const signatures = value.map((key) => `${typeof key}:${String(key)}`);
+  const signatures = value.map(rowKeySignature);
   if (new Set(signatures).size !== signatures.length) {
     throw new Error(`${label} cannot contain duplicate row keys.`);
   }
@@ -2480,39 +3029,54 @@ function validateSelectionState(
   }
 }
 
-function validateFilterShape(value: unknown, ids: Set<string>, root = false): void {
-  if (!isPlainRecord(value) || typeof value.id !== 'string' || !value.id || ids.has(value.id)) {
-    throw new Error('Grid view query contains invalid or duplicate filter ids.');
-  }
-  ids.add(value.id);
-  if (value.type === 'condition') {
-    if (
-      root ||
-      typeof value.fieldId !== 'string' ||
-      !value.fieldId ||
-      typeof value.operator !== 'string' ||
-      !value.operator ||
-      (value.value !== undefined && !isGridJsonValue(value.value))
-    ) {
-      throw new Error('Grid view query contains an invalid filter condition.');
-    }
-    return;
-  }
+function validateEditingState<Row extends object>(
+  value: unknown,
+  label: string,
+  definition: GridResolvedDefinition<Row>,
+): void {
   if (
-    value.type !== 'group' ||
-    (value.logic !== 'and' && value.logic !== 'or') ||
-    (value.negated !== undefined && typeof value.negated !== 'boolean') ||
-    !Array.isArray(value.children)
+    !isPlainRecord(value) ||
+    typeof value.saving !== 'boolean' ||
+    (value.saving && value.active === undefined) ||
+    (value.error !== undefined && typeof value.error !== 'string') ||
+    (value.errorCode !== undefined &&
+      !['required', 'validation', 'saveFailed'].includes(String(value.errorCode)))
   ) {
-    throw new Error('Grid view query contains an invalid filter group.');
+    throw new Error(`${label} does not match the grid editing state protocol.`);
   }
-  value.children.forEach((child) => validateFilterShape(child, ids));
+  if (value.active === undefined) return;
+  if (
+    !isPlainRecord(value.active) ||
+    !isValidGridRowKey(value.active.rowKey) ||
+    typeof value.active.fieldId !== 'string' ||
+    !value.active.fieldId ||
+    !Object.prototype.hasOwnProperty.call(value.active, 'previousValue') ||
+    !Object.prototype.hasOwnProperty.call(value.active, 'draft') ||
+    !definition.fieldMap.get(value.active.fieldId)?.edit
+  ) {
+    throw new Error(`${label}.active does not reference an editable field and valid row key.`);
+  }
+}
+
+function validateActionState(value: unknown, label: string): void {
+  if (
+    !isPlainRecord(value) ||
+    !isPlainRecord(value.pending) ||
+    !isPlainRecord(value.errors) ||
+    Object.entries(value.pending).some(([key, pending]) => !key || typeof pending !== 'boolean') ||
+    Object.entries(value.errors).some(
+      ([key, error]) => !key || (error !== undefined && typeof error !== 'string'),
+    )
+  ) {
+    throw new Error(`${label} does not match the grid action state protocol.`);
+  }
 }
 
 function validateViewState<Row extends object>(
   value: unknown,
   label: string,
   definition: GridResolvedDefinition<Row>,
+  capabilities: GridResolvedCapabilities,
 ): void {
   if (
     !isPlainRecord(value) ||
@@ -2531,16 +3095,41 @@ function validateViewState<Row extends object>(
       ids.has(view.id) ||
       typeof view.name !== 'string' ||
       !view.name.trim() ||
-      !isPlainRecord(view.query)
+      !isPlainRecord(view.query) ||
+      (view.scope !== undefined && !['private', 'shared', 'system'].includes(String(view.scope))) ||
+      (view.readonly !== undefined && typeof view.readonly !== 'boolean') ||
+      (view.owner !== undefined && typeof view.owner !== 'string') ||
+      !isIsoTimestamp(view.createdAt) ||
+      !isIsoTimestamp(view.updatedAt) ||
+      (view.meta !== undefined && (!isPlainRecord(view.meta) || !isGridJsonValue(view.meta)))
     ) {
       throw new Error(`${label}.items[${index}] is invalid.`);
     }
     ids.add(view.id);
     const query = view.query;
-    if (typeof query.keyword !== 'string' || !Array.isArray(query.sorts)) {
-      throw new Error(`${label}.items[${index}].query is invalid.`);
-    }
-    validateFilterShape(query.filters, new Set(), true);
+    const viewCapabilities: GridResolvedCapabilities = {
+      ...capabilities,
+      search: true,
+      filter: {
+        logic: 'nested',
+        negation: true,
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        maxConditions: Number.MAX_SAFE_INTEGER,
+      },
+      sort: { max: Number.MAX_SAFE_INTEGER, nulls: true },
+      projection: true,
+    };
+    validateGridQuery(
+      {
+        ...(query as unknown as Omit<GridQuery, 'pagination'>),
+        pagination:
+          capabilities.pagination === 'cursor'
+            ? { type: 'cursor', pageSize: 1 }
+            : { type: 'offset', page: 1, pageSize: 1 },
+      },
+      definition,
+      viewCapabilities,
+    );
     validateColumnState(view.columns, `${label}.items[${index}].columns`, definition);
   });
   if (value.activeId !== undefined && !ids.has(value.activeId)) {
@@ -2548,10 +3137,19 @@ function validateViewState<Row extends object>(
   }
 }
 
+function isIsoTimestamp(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
 function validateDataState<Row extends object>(
   value: unknown,
   label: string,
   definition: GridResolvedDefinition<Row>,
+  pagination: GridPagination,
 ): void {
   if (
     !isPlainRecord(value) ||
@@ -2565,6 +3163,7 @@ function validateDataState<Row extends object>(
     throw new Error(`${label} does not match the grid data state protocol.`);
   }
   validateRowKeys(value.rows as Row[], `${label}.rows`, definition);
+  normalizeGridResult(value as unknown as GridReadResult<Row>, pagination);
   Object.entries(value.facets).forEach(([fieldId, options]) => {
     normalizeGridOptions(options, `${label}.facets.${fieldId}`);
   });
@@ -2582,10 +3181,18 @@ function validateDataState<Row extends object>(
   if (value.error !== undefined && !(value.error instanceof Error)) {
     throw new Error(`${label}.error must be an Error.`);
   }
+  if (
+    (value.requestId !== undefined &&
+      (!Number.isSafeInteger(value.requestId) || (value.requestId as number) < 0)) ||
+    (value.updatedAt !== undefined &&
+      (typeof value.updatedAt !== 'number' || !Number.isFinite(value.updatedAt)))
+  ) {
+    throw new Error(`${label} request metadata is invalid.`);
+  }
 }
 
 function uniqueRowKeys(values: readonly GridRowKey[]): GridRowKey[] {
-  return [...new Set(values)];
+  return [...new Map(values.map((key) => [rowKeySignature(key), key])).values()];
 }
 
 function isValidGridRowKey(value: unknown): value is GridRowKey {

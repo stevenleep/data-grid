@@ -134,6 +134,7 @@ fields: [{
 const definition = defineGrid<Order>({
   id: 'orders',
   rowKey: (row) => `${row.tenantId}:${row.id}`,
+  rowKeyIdentity: 'tenant-order-v1',
   projection: {
     // 后端原始 select key；function rowKey 和未映射的 path rowKey 必须显式声明。
     rowKey: ['tenant_id', 'id'],
@@ -147,5 +148,7 @@ const definition = defineGrid<Order>({
 ```
 
 字符串 `rowKey` 会自动使用同名字段的 `selectKey`，没有同名字段时直接使用该字符串；path `rowKey` 只有在能匹配一个字段 path 时才会自动映射。显式设置 `query.projection = []` 表示只请求这些必需 key，而不是退回全部可见列。
+
+函数形式的 `rowKey` 如果会随 React render 重建，应提供稳定的 `rowKeyIdentity`。Core 用这个语义身份判断定义是否真的切换，不能使用函数对象地址代替业务身份；改变取 key 的规则时同时改变 identity。
 
 请求签名基于稳定序列化结果，不包含 UI 临时 id；它用于缓存、去重和 all-matching 选择范围。

@@ -150,5 +150,16 @@ describe('grid result protocol', () => {
         pagination,
       ),
     ).toThrow('hasPrevious');
+
+    expect(
+      normalizeGridResult(
+        {
+          rows: [],
+          total: { value: 3, accuracy: 'exact' },
+          pageInfo: { hasPrevious: false, hasNext: false },
+        },
+        { type: 'offset', page: 3, pageSize: 2 },
+      ).rows,
+    ).toEqual([]);
   });
 });

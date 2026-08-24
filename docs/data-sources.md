@@ -69,7 +69,11 @@ const source = createRemoteSource<Order>({
 
 `source.datasetKey` 是当前逻辑数据集的稳定、非空字符串，例如 `${tenantId}:orders`。当同一表格实例可在租户、项目、仓库或其他数据边界之间切换时必须设置，不能只依赖一个复用的 `read` 函数。
 
-`datasetKey` 变化会使旧请求、请求/选项缓存、选择、编辑和动作与新数据集隔离，并在非受控查询中重置页码。Local、Remote 和 Controlled 模式都支持该字段。它是客户端身份键，不是授权令牌；服务端仍必须校验租户与行权限。
+没有 `datasetKey` 时，Remote source 会把 `read` 函数身份作为保守的数据集边界。不要在每次 React render 中创建一个语义相同但引用不同的内联 `read`；应把 source/reader 提到稳定作用域、用 `useMemo/useCallback` 保持引用，或直接提供稳定 `datasetKey`。
+
+`datasetKey` 变化会使旧请求、请求/选项缓存、结果、选择、编辑和动作与新数据集隔离，并在非受控查询中重置页码。Local、Remote 和 Controlled 模式都支持该字段。受控实体 slice 如果仍回传上一数据集的同一引用，Core 会暂时屏蔽它们并通过 `dataset.controlled.reset` 发出清空意图；业务接受后应回写新数据集的状态。这样即使两个租户都存在相同 row key，旧选择或编辑草稿也不会落到新实体上。
+
+`datasetKey` 是客户端身份键，不是授权令牌；服务端仍必须校验租户与行权限。不要在数据集切换后故意复制并回传旧实体状态；引用隔离是竞态保护，不替代业务正确地按数据集管理受控状态。
 
 ## Controlled
 
@@ -117,7 +121,7 @@ const capabilities = {
 } satisfies GridCapabilities;
 ```
 
-声明必须与后端真实能力一致。UI 会据此限制构造器，Core 在发请求前再次校验。
+声明必须与后端真实能力一致。UI 会据此限制构造器，Core 在发请求前再次校验。运行中收缩能力时，如果现有 query 或待应用视图包含新能力不支持的筛选、嵌套逻辑、取反、排序或 null placement，更新会被事务性拒绝并报告明确冲突，不会静默删除条件后发出范围更宽的请求。业务应先显式迁移 query/视图，再切换能力。
 
 ## 返回总数
 

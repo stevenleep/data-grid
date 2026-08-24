@@ -1,6 +1,7 @@
 node_modules
 dist
 coverage
+temp
 *.tgz
 .DS_Store
 .vercel

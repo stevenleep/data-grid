@@ -48,6 +48,37 @@ function safeUrl(value: unknown, image = false): string | undefined {
   return undefined;
 }
 
+function isInteractiveDescendant(
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean {
+  if (!(target instanceof Element) || !(currentTarget instanceof Element)) return false;
+  const interactive = target.closest(
+    'a, button, input, select, textarea, summary, audio[controls], video[controls], [data-grid-stop-interaction], [aria-haspopup], [role="button"], [role="checkbox"], [role="combobox"], [role="link"], [role="menuitem"], [role="option"], [role="radio"], [role="slider"], [role="spinbutton"], [role="switch"], [role="tab"], [contenteditable]:not([contenteditable="false"])',
+  );
+  return Boolean(
+    interactive && interactive !== currentTarget && currentTarget.contains(interactive),
+  );
+}
+
+function focusEditableRowSibling(element: HTMLElement, direction: -1 | 1): void {
+  const cell = element.closest('td');
+  const row = cell?.parentElement;
+  if (!cell || !row) return;
+  const cellIndex = Array.from(row.children).indexOf(cell);
+  let sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+  while (sibling) {
+    const target = sibling.children[cellIndex]?.querySelector<HTMLElement>(
+      '[data-grid-editable="true"]',
+    );
+    if (target) {
+      target.focus();
+      return;
+    }
+    sibling = direction < 0 ? sibling.previousElementSibling : sibling.nextElementSibling;
+  }
+}
+
 function optionLabel(value: unknown, options: GridOption[] | undefined): ReactNode | undefined {
   const key = entityOptionValue(value);
   const label = options?.find((option) => Object.is(option.value, key))?.label;
@@ -421,7 +452,9 @@ export function GridEditableCell<Row extends object>({
   const rowKey = instance.definition.getRowKey(row);
   const editing = useGridSelector<Row, EditingCellSnapshot>((state) => {
     const active =
-      state.editing.active?.rowKey === rowKey && state.editing.active.fieldId === field.id;
+      state.editing.active !== undefined &&
+      String(state.editing.active.rowKey) === String(rowKey) &&
+      state.editing.active.fieldId === field.id;
     return active
       ? {
           active: true,
@@ -449,7 +482,11 @@ export function GridEditableCell<Row extends object>({
   }, [activeEditorKey, editorType]);
   const options = useGridOptions(field, optionSearch, active && usesOptions && !field.editor);
   const committingRef = useRef(false);
+  const numericModeRef = useRef<{ key: string; stringMode: boolean } | undefined>(undefined);
   const canEdit = instance.editing.canEdit(row, field.id);
+  useEffect(() => {
+    if (active && !canEdit) instance.editing.cancel();
+  }, [active, canEdit, instance]);
   const coreEditingError =
     editing.errorCode === 'required'
       ? locale.required
@@ -490,19 +527,42 @@ export function GridEditableCell<Row extends object>({
       editorType === 'money' && draft && typeof draft === 'object' && !Array.isArray(draft)
         ? (draft as Record<string, unknown>)
         : undefined;
-    const numericDraft = moneyRecord?.amount ?? draft;
-    const stringMode =
-      editorType === 'decimal' || (editorType === 'money' && typeof numericDraft === 'string');
+    const numericDraft = moneyRecord ? moneyRecord.amount : draft;
+    if (numericModeRef.current?.key !== activeEditorKey) {
+      const configuredNumericMode = field.edit ? field.edit.numericMode : undefined;
+      numericModeRef.current = {
+        key: activeEditorKey,
+        stringMode:
+          configuredNumericMode !== undefined
+            ? configuredNumericMode === 'string'
+            : editorType === 'decimal' ||
+              (editorType === 'money' &&
+                (typeof numericDraft === 'string' || numericDraft == null)),
+      };
+    }
+    const stringMode = numericModeRef.current.stringMode;
+    const ratioPercent = editorType === 'percent' && field.meta?.percentScale === 'ratio';
+    const numericInputDraft = (() => {
+      if (!ratioPercent || numericDraft == null || numericDraft === '') return numericDraft;
+      const value = Number(numericDraft);
+      return Number.isFinite(value) ? value * 100 : numericDraft;
+    })();
     input = (
       <InputNumber
         size="small"
         autoFocus
         stringMode={stringMode}
         placeholder={field.edit ? field.edit.placeholder : undefined}
-        value={numericDraft as number | string | null | undefined}
-        onChange={(value) =>
-          instance.editing.setDraft(moneyRecord ? { ...moneyRecord, amount: value } : value)
-        }
+        value={numericInputDraft as number | string | null | undefined}
+        onChange={(value) => {
+          const nextValue =
+            ratioPercent && value != null && Number.isFinite(Number(value))
+              ? Number(value) / 100
+              : value;
+          instance.editing.setDraft(
+            moneyRecord ? { ...moneyRecord, amount: nextValue } : nextValue,
+          );
+        }}
         onBlur={() => void commit()}
         onKeyDown={(event) => {
           if (event.key === 'Enter') void commit();
@@ -513,10 +573,13 @@ export function GridEditableCell<Row extends object>({
   } else if (
     ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(editorType)
   ) {
+    const editMultiple = field.edit ? field.edit.multiple : undefined;
+    const metaMultiple =
+      typeof field.meta?.multiple === 'boolean' ? field.meta.multiple : undefined;
     const multiple =
       editorType === 'multiSelect' ||
       (['user', 'relation'].includes(editorType) &&
-        (Array.isArray(draft) || field.meta?.multiple === true));
+        (editMultiple ?? metaMultiple ?? Array.isArray(draft)));
     const draftItems = multiple
       ? Array.isArray(draft)
         ? draft
@@ -686,14 +749,37 @@ export function GridEditableCell<Row extends object>({
   return (
     <div
       className="hui-grid__editable-cell"
-      tabIndex={0}
+      data-grid-editable="true"
+      tabIndex={rowIndex === 0 ? 0 : -1}
       role="button"
       aria-label={locale.editCell(gridNodeText(field.title) || field.id)}
-      onDoubleClick={() => instance.editing.begin(row, field.id)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
+      aria-keyshortcuts="Enter Space"
+      onClick={(event) => {
+        if (
+          event.detail === 0 &&
+          event.target === event.currentTarget &&
+          !isInteractiveDescendant(event.target, event.currentTarget)
+        ) {
           instance.editing.begin(row, field.id);
+        }
+      }}
+      onDoubleClick={(event) => {
+        if (!isInteractiveDescendant(event.target, event.currentTarget)) {
+          instance.editing.begin(row, field.id);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          event.currentTarget.click();
+        }
+        if (event.target === event.currentTarget && event.key === 'ArrowUp') {
+          event.preventDefault();
+          focusEditableRowSibling(event.currentTarget, -1);
+        }
+        if (event.target === event.currentTarget && event.key === 'ArrowDown') {
+          event.preventDefault();
+          focusEditableRowSibling(event.currentTarget, 1);
         }
       }}
     >

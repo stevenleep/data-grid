@@ -1,6 +1,6 @@
 import type { Locale as AntdLocale } from 'antd/es/locale';
 import type { TableProps, ThemeConfig } from 'antd';
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import type { CSSProperties, ErrorInfo, MouseEvent, ReactNode } from 'react';
 import type {
   GridEvent,
   GridFilterOperator,
@@ -9,7 +9,6 @@ import type {
   GridResolvedColumn,
   GridResolvedField,
   GridState,
-  GridTotal,
 } from '../core';
 
 export interface GridRowInteractionContext<Row extends object> {
@@ -71,7 +70,7 @@ export interface GridLocale {
   save: string;
   remove: string;
   selectAll: (count: number) => string;
-  total: (count: number, accuracy?: GridTotal['accuracy']) => string;
+  total: (count: number, accuracy?: 'exact' | 'estimated' | 'atLeast') => string;
   selected: (count: number) => string;
   page: (page: number) => string;
   pageSize: (size: number) => string;
@@ -105,6 +104,9 @@ export interface GridLocale {
   falseLabel: string;
   invalidJson: string;
   renderFailed: string;
+  filterCapabilityConflict: string;
+  sortCapabilityConflict: string;
+  defaultNullPlacement: string;
 }
 
 export interface GridToolbarFeatures {
@@ -151,6 +153,7 @@ export interface GridUiConfig<Row extends object> {
   isCellClickable?: (context: GridCellInteractionContext<Row>) => boolean;
   renderEmpty?: (context: { filtered: boolean; instance: GridInstance<Row> }) => ReactNode;
   renderError?: (error: Error, instance: GridInstance<Row>) => ReactNode;
+  onRenderError?: (error: Error, info: ErrorInfo) => void;
 }
 
 export type GridTablePlatformProps<Row extends object> = Omit<

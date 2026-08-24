@@ -3,10 +3,12 @@ import { Button, Dropdown, Input, Pagination, Select, Space, Tag, Tooltip } from
 import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
 import {
   countFilterConditions,
+  createFilterGroup,
   removeFilterNode,
   type GridDensity,
   type GridFilterCondition,
   type GridFilterGroup,
+  type GridResolvedField,
   type GridSummaryValue,
   type GridTotal as GridTotalValue,
 } from '../core';
@@ -15,6 +17,7 @@ import { useGridUi } from './context';
 import { renderGridValue } from './cells';
 import { resolveGridLocale } from './locale';
 import { gridNodeText, renderGridNode, safeGridText } from './render';
+import { useGridSelectionCount, useResolvedGridSelectionMode } from './selection-mode';
 
 function classes(...values: Array<string | undefined | false>) {
   return values.filter(Boolean).join(' ');
@@ -89,17 +92,21 @@ export function GridSearch<Row extends object>({
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
   const keyword = useGridSelector<Row, string>((state) => state.query.keyword);
-  const external = controlled ?? keyword;
+  const isControlled = controlled !== undefined;
+  const external = controlled !== undefined ? controlled : keyword;
   const [value, setValue] = useState(external);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const committedRef = useRef(external.trim());
+  const draftDirtyRef = useRef(false);
 
   useEffect(() => {
+    if (draftDirtyRef.current) return;
     committedRef.current = external.trim();
     setValue(external);
   }, [external]);
   useEffect(() => {
     if (value === external || value.trim() === committedRef.current) {
+      draftDirtyRef.current = false;
       clearTimeout(timerRef.current);
       timerRef.current = undefined;
       return;
@@ -109,9 +116,14 @@ export function GridSearch<Row extends object>({
       () => {
         timerRef.current = undefined;
         const next = value.trim();
+        draftDirtyRef.current = false;
         committedRef.current = next;
-        if (onChange) onChange(next);
-        else if (next !== keyword) instance.query.setKeyword(next, 'user');
+        if (!isControlled && next !== keyword) instance.query.setKeyword(next, 'user');
+        onChange?.(next);
+        if (isControlled) {
+          committedRef.current = external.trim();
+          setValue(external);
+        }
       },
       Math.max(0, debounce),
     );
@@ -119,7 +131,7 @@ export function GridSearch<Row extends object>({
       clearTimeout(timerRef.current);
       timerRef.current = undefined;
     };
-  }, [debounce, external, instance, keyword, onChange, value]);
+  }, [debounce, external, instance, isControlled, keyword, onChange, value]);
 
   return (
     <Input
@@ -129,16 +141,24 @@ export function GridSearch<Row extends object>({
       prefix={<SearchOutlined />}
       value={value}
       style={width ? { width } : undefined}
-      placeholder={placeholder || locale.searchPlaceholder}
-      disabled={disabled ?? (!onChange && !instance.capabilities.search)}
-      onChange={(event) => setValue(event.target.value)}
+      placeholder={placeholder ?? locale.searchPlaceholder}
+      disabled={disabled ?? (isControlled ? !onChange : !instance.capabilities.search)}
+      onChange={(event) => {
+        draftDirtyRef.current = event.target.value !== external;
+        setValue(event.target.value);
+      }}
       onPressEnter={() => {
         clearTimeout(timerRef.current);
         timerRef.current = undefined;
         const next = value.trim();
+        draftDirtyRef.current = false;
         committedRef.current = next;
-        if (onChange) onChange(next);
-        else if (next !== keyword) instance.query.setKeyword(next, 'user');
+        if (!isControlled && next !== keyword) instance.query.setKeyword(next, 'user');
+        onChange?.(next);
+        if (isControlled) {
+          committedRef.current = external.trim();
+          setValue(external);
+        }
       }}
     />
   );
@@ -296,15 +316,17 @@ export function GridSelectionSummary<Row extends object>({
   const total = useGridSelector<Row, ReturnType<typeof instance.getState>['data']['total']>(
     (state) => state.data.total,
   );
-  const selectionProps = typeof ui.selection === 'object' ? ui.selection : undefined;
-  const count =
-    selection.mode === 'explicit'
-      ? selection.selectedKeys.length
-      : Math.max(0, selection.total - selection.excludedKeys.length);
+  const configuredSelection = ui.selection ?? instance.definition.defaults?.selection;
+  const selectionProps = typeof configuredSelection === 'object' ? configuredSelection : undefined;
+  const selectionMode = useResolvedGridSelectionMode(
+    instance,
+    configuredSelection ? (selectionProps?.type === 'radio' ? 'radio' : 'checkbox') : undefined,
+  );
+  const count = useGridSelectionCount(instance, selectionMode);
   if (!count) return null;
   const canSelectAll =
     allowSelectAll &&
-    selectionProps?.type !== 'radio' &&
+    selectionMode !== 'radio' &&
     selectionProps?.hideSelectAll !== true &&
     instance.capabilities.selectAllMatching &&
     selection.mode === 'explicit' &&
@@ -435,41 +457,116 @@ export function GridPagination<Row extends object>({
   );
 }
 
-function flattenConditions(group: GridFilterGroup): GridFilterCondition[] {
+interface ActiveFilterCondition {
+  condition: GridFilterCondition;
+  groups: Array<{ logic: 'and' | 'or'; negated: boolean }>;
+}
+
+function flattenConditions(
+  group: GridFilterGroup,
+  groups: ActiveFilterCondition['groups'] = [],
+  depth = 0,
+): ActiveFilterCondition[] {
+  const describe = depth > 0 || group.logic === 'or' || group.negated;
+  const currentGroups = describe
+    ? [...groups, { logic: group.logic, negated: Boolean(group.negated) }]
+    : groups;
   return group.children.flatMap((node) =>
-    node.type === 'group' ? flattenConditions(node) : [node],
+    node.type === 'group'
+      ? flattenConditions(node, currentGroups, depth + 1)
+      : [{ condition: node, groups: currentGroups }],
   );
 }
 
-export interface GridActiveFiltersProps {
+function activeOptionIdentity(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  return record.value ?? record.id ?? record.key ?? value;
+}
+
+function removeEditableFilterConditions(
+  group: GridFilterGroup,
+  editableFieldIds: ReadonlySet<string>,
+): GridFilterGroup {
+  const children: GridFilterGroup['children'] = [];
+  group.children.forEach((node) => {
+    if (node.type === 'condition') {
+      if (!editableFieldIds.has(node.fieldId)) children.push(node);
+      return;
+    }
+    const next = removeEditableFilterConditions(node, editableFieldIds);
+    if (countFilterConditions(next)) children.push(next);
+  });
+  return {
+    ...group,
+    children,
+  };
+}
+
+export interface GridActiveFiltersProps<Row extends object = object> {
   maxVisible?: number;
+  /** Fields this composed filter surface is allowed to mutate. Other conditions remain readonly. */
+  fields?: readonly GridResolvedField<Row>[];
 }
 
 export function GridActiveFilters<Row extends object>({
   maxVisible = 8,
-}: GridActiveFiltersProps = {}) {
+  fields,
+}: GridActiveFiltersProps<Row> = {}) {
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
   const filters = useGridSelector<Row, GridFilterGroup>((state) => state.query.filters);
+  const facets = useGridSelector<Row, ReturnType<typeof instance.getState>['data']['facets']>(
+    (state) => state.data.facets,
+  );
   const conditions = flattenConditions(filters);
+  const editableFieldIds = fields ? new Set(fields.map((field) => field.id)) : undefined;
+  const editableCount = editableFieldIds
+    ? conditions.filter(({ condition }) => editableFieldIds.has(condition.fieldId)).length
+    : conditions.length;
   if (!conditions.length) return null;
   return (
     <div className="hui-grid__active-filters">
-      {conditions.slice(0, maxVisible).map((condition) => {
+      {conditions.slice(0, maxVisible).map(({ condition, groups }) => {
         const field = instance.definition.fieldMap.get(condition.fieldId);
+        const options = field
+          ? Array.isArray(field.options)
+            ? field.options
+            : facets?.[field.id]
+          : undefined;
+        const labelValue = (item: unknown) => {
+          const option = options?.find((candidate) =>
+            Object.is(candidate.value, activeOptionIdentity(item)),
+          );
+          return option ? gridNodeText(option.label) || safeGridText(item) : safeGridText(item);
+        };
         const value = Array.isArray(condition.value)
-          ? condition.value.map((item) => safeGridText(item)).join(', ')
-          : safeGridText(condition.value);
+          ? condition.value.map(labelValue).join(', ')
+          : labelValue(condition.value);
+        const groupLabel = groups
+          .map(
+            (group) =>
+              `${group.negated ? `${locale.not} ` : ''}${
+                group.logic === 'or' ? locale.anyCondition : locale.allConditions
+              }`,
+          )
+          .join(' › ');
+        const editable = !editableFieldIds || editableFieldIds.has(condition.fieldId);
         return (
           <Tag
             key={condition.id}
-            closable
-            onClose={(event) => {
-              event.preventDefault();
-              instance.query.setFilters(removeFilterNode(filters, condition.id), 'user');
-            }}
+            closable={editable}
+            onClose={
+              editable
+                ? (event) => {
+                    event.preventDefault();
+                    instance.query.setFilters(removeFilterNode(filters, condition.id), 'user');
+                  }
+                : undefined
+            }
           >
+            {groupLabel ? `${groupLabel} · ` : ''}
             {field ? gridNodeText(field.title) || field.id : condition.fieldId} ·{' '}
             {locale.operatorLabel(condition.operator)}
             {value ? ` · ${value}` : ''}
@@ -477,13 +574,25 @@ export function GridActiveFilters<Row extends object>({
         );
       })}
       {conditions.length > maxVisible && <span>+{conditions.length - maxVisible}</span>}
-      <Button
-        size="small"
-        type="link"
-        onClick={() => instance.query.setFilters({ ...filters, children: [] }, 'user')}
-      >
-        {locale.clear}
-      </Button>
+      {editableCount > 0 && (
+        <Button
+          size="small"
+          type="link"
+          onClick={() => {
+            if (!editableFieldIds) {
+              instance.query.setFilters(createFilterGroup(), 'user');
+              return;
+            }
+            const protectedFilters = removeEditableFilterConditions(filters, editableFieldIds);
+            instance.query.setFilters(
+              countFilterConditions(protectedFilters) ? protectedFilters : createFilterGroup(),
+              'user',
+            );
+          }}
+        >
+          {locale.clear}
+        </Button>
+      )}
       <span className="hui-grid__filter-count" aria-hidden>
         {countFilterConditions(filters)}
       </span>

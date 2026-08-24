@@ -47,7 +47,7 @@ export function GridColumnPanel<Row extends object>({
   const [search, setSearch] = useState('');
   const entries = useMemo(
     () => leafColumnEntries(supplied || instance.definition.columns),
-    [instance, supplied],
+    [instance, instance.definition.columns, supplied],
   );
   const columns = useMemo(() => entries.map((entry) => entry.column), [entries]);
   const entryMap = useMemo(
@@ -72,16 +72,23 @@ export function GridColumnPanel<Row extends object>({
   );
   const setVisible = (columnId: string, visible: boolean) => {
     if (readOnly) return;
-    if (controlled === undefined && !onChange)
-      return instance.columns.setVisible(columnId, visible);
     const hidden = new Set(state.hidden);
     if (visible) hidden.delete(columnId);
     else hidden.add(columnId);
+    if (controlled === undefined) {
+      instance.columns.setVisible(columnId, visible);
+      onChange?.(instance.getState().columns);
+      return;
+    }
     onChange?.({ ...state, hidden: [...hidden] });
   };
   const setPinned = (columnId: string, pinned: 'left' | 'right' | null) => {
     if (readOnly) return;
-    if (controlled === undefined && !onChange) return instance.columns.setPinned(columnId, pinned);
+    if (controlled === undefined) {
+      instance.columns.setPinned(columnId, pinned);
+      onChange?.(instance.getState().columns);
+      return;
+    }
     onChange?.({ ...state, pinned: { ...state.pinned, [columnId]: pinned } });
   };
   const move = (columnId: string, direction: -1 | 1) => {
@@ -98,13 +105,17 @@ export function GridColumnPanel<Row extends object>({
     if (index < 0 || target < 0) return;
     [nextOrder[index], nextOrder[target]] = [nextOrder[target]!, nextOrder[index]!];
     if (readOnly) return;
-    if (controlled === undefined && !onChange) instance.columns.setOrder(nextOrder);
-    else onChange?.({ ...state, order: nextOrder });
+    if (controlled === undefined) {
+      instance.columns.setOrder(nextOrder);
+      onChange?.(instance.getState().columns);
+    } else onChange?.({ ...state, order: nextOrder });
   };
   const reset = () => {
     if (readOnly) return;
-    if (controlled === undefined && !onChange) instance.columns.reset();
-    else onChange?.(instance.columns.getDefaultState());
+    if (controlled === undefined) {
+      instance.columns.reset();
+      onChange?.(instance.getState().columns);
+    } else onChange?.(instance.columns.getDefaultState());
   };
 
   return (
@@ -126,8 +137,7 @@ export function GridColumnPanel<Row extends object>({
         {ordered.map((column) => {
           const managed = Boolean(
             !readOnly &&
-            (onChange ||
-              (controlled === undefined && instance.definition.columnMap.has(column.id))),
+            (controlled !== undefined ? onChange : instance.definition.columnMap.has(column.id)),
           );
           const hidden = state.hidden.includes(column.id);
           const pinned = state.pinned[column.id] ?? null;
@@ -228,11 +238,11 @@ export function GridColumnTrigger<Row extends object>({
   const button =
     typeof trigger === 'function'
       ? trigger({ open })
-      : trigger || (
+      : (trigger ?? (
           <Button size="small" type="text" icon={<SettingOutlined />}>
             {locale.fields}
           </Button>
-        );
+        ));
   return (
     <Popover
       open={open}

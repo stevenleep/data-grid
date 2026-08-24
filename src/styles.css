@@ -155,6 +155,12 @@
   box-shadow: inset 3px 0 0 0 var(--hui-grid-primary);
 }
 
+.hui-grid__table-wrap .ant-table-tbody > tr.hui-grid__row--clickable:focus-visible,
+.hui-grid__table-wrap .ant-table-tbody > tr > td.hui-grid__cell--clickable:focus-visible {
+  outline: 2px solid var(--hui-grid-primary);
+  outline-offset: -2px;
+}
+
 .hui-grid__column-title {
   position: relative;
   display: flex;
@@ -453,6 +459,8 @@
 
 .hui-grid__view-panel {
   width: min(300px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  overflow: auto;
 }
 
 .hui-grid__view-item {

@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   bindGridSchema,
   createFieldHelper,
   defineGrid,
   defineGridRuntime,
   defineGridSchema,
+  defineGridValueType,
   parseGridSchema,
   resolveGridDefinition,
 } from '../src/core';
@@ -235,5 +236,88 @@ describe('grid definition', () => {
       builtins.fieldMap.get('happenedAt')?.encodeValue(new Date('2026-08-24T00:00:00.000Z')),
     ).toBe('2026-08-24T00:00:00.000Z');
     expect(() => builtins.fieldMap.get('score')?.encodeValue(Number.NaN)).toThrow('non-finite');
+  });
+
+  it('preserves and validates explicit editor cardinality', () => {
+    const schema = parseGridSchema({
+      protocol: 'huiyun.data-grid/v1',
+      id: 'multi-edit',
+      revision: 1,
+      fields: [
+        {
+          id: 'tags',
+          title: 'Tags',
+          edit: { enabled: true, multiple: true, numericMode: 'string' },
+        },
+      ],
+    });
+    const resolved = resolveGridDefinition(bindGridSchema<OrderRow>(schema, {}, 'id'));
+    expect(resolved.fieldMap.get('tags')?.edit).toMatchObject({
+      enabled: true,
+      multiple: true,
+      numericMode: 'string',
+    });
+
+    expect(() =>
+      parseGridSchema({
+        protocol: 'huiyun.data-grid/v1',
+        id: 'invalid-multi-edit',
+        revision: 1,
+        fields: [{ id: 'tags', title: 'Tags', edit: { multiple: 'yes' } }],
+      }),
+    ).toThrow('edit.multiple must be a boolean');
+
+    expect(() =>
+      parseGridSchema({
+        protocol: 'huiyun.data-grid/v1',
+        id: 'invalid-numeric-mode',
+        revision: 1,
+        fields: [{ id: 'amount', title: 'Amount', edit: { numericMode: 'decimal' } }],
+      }),
+    ).toThrow('edit.numericMode must be number or string');
+  });
+
+  it('preserves concrete field and custom value-type values at authoring boundaries', () => {
+    const field = createFieldHelper<OrderRow>();
+    const amount = field.property('amountInCents', {
+      title: 'Amount',
+      normalize: (value) => Number(value),
+      validate: (value) => (value >= 0 ? undefined : 'Negative'),
+    });
+    expectTypeOf(amount).toMatchTypeOf<{
+      normalize?: (value: unknown, row: OrderRow) => number;
+    }>();
+
+    const instant = defineGridValueType<OrderRow, Date>({
+      codec: {
+        encode: (value) => value.toISOString(),
+        decode: (value) => new Date(String(value)),
+      },
+      compare: (left, right) => left.valueOf() - right.valueOf(),
+    });
+    expectTypeOf(instant.codec?.encode).parameter(0).toEqualTypeOf<Date>();
+    expect(() =>
+      resolveGridDefinition<OrderRow>({
+        id: 'typed-value-type',
+        rowKey: 'id',
+        valueTypes: { instant },
+        fields: [field.property('amountInCents', { title: 'Amount' })],
+      }),
+    ).not.toThrow();
+
+    if (false) {
+      field.property('amountInCents', {
+        title: 'Amount',
+        // @ts-expect-error A numeric Row property cannot normalize to a string.
+        normalize: () => 'wrong',
+      });
+      defineGridValueType<OrderRow, Date>({
+        codec: {
+          // @ts-expect-error A Date value type cannot use a string encoder input.
+          encode: (value: string) => value,
+          decode: (value) => new Date(String(value)),
+        },
+      });
+    }
   });
 });

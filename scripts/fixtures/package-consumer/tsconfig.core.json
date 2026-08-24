@@ -1,11 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2022"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
     "skipLibCheck": false,
+    "types": ["node"],
     "noEmit": true
   },
   "files": ["core-types.ts", "core-types.cts"]

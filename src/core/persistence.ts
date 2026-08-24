@@ -1,10 +1,20 @@
 import type { GridPersistence, GridPersistedState } from './types';
 import { isGridJsonValue } from './query';
 
+/** Minimal storage contract used by local persistence without requiring DOM typings. */
+export interface GridStorageLike {
+  readonly length?: number;
+  clear?(): void;
+  getItem(key: string): string | null;
+  key?(index: number): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
 export interface LocalGridPersistenceOptions {
   prefix?: string;
   scope?: string;
-  storage?: Storage;
+  storage?: GridStorageLike;
   /** Explicit account/storage identity for deterministic adapter replacement. */
   identity?: string;
 }
@@ -152,7 +162,7 @@ export function parseGridPersistedState(input: unknown): GridPersistedState {
 const storageIdentities = new WeakMap<object, number>();
 let storageIdentitySeed = 0;
 
-function storageIdentity(storage: Storage | undefined): string {
+function storageIdentity(storage: GridStorageLike | undefined): string {
   if (!storage) return 'global-local-storage';
   let identity = storageIdentities.get(storage);
   if (!identity) {
@@ -187,10 +197,10 @@ export function createLocalGridPersistence<Row extends object = object>(
   if (options.storage !== undefined && (!options.storage || typeof options.storage !== 'object')) {
     throw new Error('Local grid persistence storage must be an object.');
   }
-  const getStorage = (): Storage | undefined => {
+  const getStorage = (): GridStorageLike | undefined => {
     if (options.storage) return options.storage;
     try {
-      return typeof globalThis.localStorage === 'undefined' ? undefined : globalThis.localStorage;
+      return (globalThis as { localStorage?: GridStorageLike }).localStorage;
     } catch {
       return undefined;
     }

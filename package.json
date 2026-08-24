@@ -1,6 +1,6 @@
 {
   "name": "@huiyun/data-grid",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A protocol-driven data grid with a headless core and an Ant Design 6 renderer for React admin applications.",
   "keywords": [
     "react",
@@ -31,6 +31,7 @@
   "files": [
     "dist",
     "docs",
+    "etc/api",
     "style.d.ts",
     "README.md",
     "CHANGELOG.md",
@@ -100,20 +101,26 @@
     "test:watch": "vitest",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
+    "api:check": "pnpm build && node scripts/api-report.mjs",
+    "api:check:built": "node scripts/api-report.mjs",
+    "api:report": "pnpm build && node scripts/api-report.mjs --local",
     "quality:check": "pnpm format:check && pnpm typecheck && pnpm test:coverage",
     "check": "pnpm quality:check && pnpm build && pnpm demo:build",
-    "package:inspect": "pnpm pack:check && pnpm publint && pnpm attw",
-    "package:check": "pnpm build && pnpm package:inspect && pnpm consumer:smoke:all",
-    "release:check": "pnpm quality:check && pnpm build && pnpm demo:build && pnpm package:inspect && pnpm consumer:smoke:all",
+    "package:inspect": "pnpm build && pnpm package:inspect:built",
+    "package:inspect:built": "pnpm api:check:built && pnpm pack:check && pnpm publint && pnpm attw",
+    "package:check": "pnpm build && pnpm package:inspect:built && pnpm consumer:smoke:all",
+    "release:check": "pnpm quality:check && pnpm build && pnpm demo:build && pnpm package:inspect:built && pnpm consumer:smoke:all",
     "prepublishOnly": "pnpm release:check",
     "pack:check": "pnpm pack --dry-run",
     "publint": "publint",
     "attw": "attw --pack . --profile node16 --entrypoints . core react antd",
     "consumer:smoke": "node scripts/package-smoke.mjs",
-    "consumer:smoke:core": "pnpm consumer:smoke -- --profile=core-only",
+    "consumer:smoke:core": "pnpm consumer:smoke -- --profile=core-min && pnpm consumer:smoke -- --profile=core-current",
     "consumer:smoke:minimum": "pnpm consumer:smoke -- --profile=react18-min && pnpm consumer:smoke -- --profile=react19-min",
     "consumer:smoke:current": "pnpm consumer:smoke -- --profile=react18-current && pnpm consumer:smoke -- --profile=react19-current --with-vite",
-    "consumer:smoke:all": "pnpm consumer:smoke:core && pnpm consumer:smoke:minimum && pnpm consumer:smoke:current"
+    "consumer:smoke:npm": "pnpm consumer:smoke -- --profile=core-min --manager=npm && pnpm consumer:smoke -- --profile=react19-current --with-vite --manager=npm",
+    "consumer:smoke:browser": "pnpm consumer:smoke -- --profile=react19-current --with-vite --with-browser",
+    "consumer:smoke:all": "pnpm consumer:smoke:core && pnpm consumer:smoke:minimum && pnpm consumer:smoke:current && pnpm consumer:smoke:npm && pnpm consumer:smoke:browser"
   },
   "peerDependencies": {
     "@ant-design/icons": ">=6.0.0 <7.0.0",
@@ -141,6 +148,7 @@
   "devDependencies": {
     "@ant-design/icons": "^6.3.2",
     "@arethetypeswrong/cli": "0.18.5",
+    "@microsoft/api-extractor": "7.59.0",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "^16.3.0",
     "@tsdown/css": "^0.22.14",
@@ -150,16 +158,18 @@
     "@vitest/coverage-v8": "4.1.11",
     "antd": "^6.6.1",
     "jsdom": "^27.2.0",
+    "playwright": "1.62.1",
     "prettier": "^3.9.6",
     "publint": "0.3.24",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "tsdown": "^0.22.14",
     "typescript": "^5.9.3",
+    "typescript-current": "npm:typescript@7.0.2",
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=20.19.0 <27"
+    "node": ">=20.19.0"
   },
   "publishConfig": {
     "access": "public",

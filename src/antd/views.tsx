@@ -33,16 +33,18 @@ export function GridViewPanel<Row extends object>({ className }: GridViewPanelPr
     >
       <div className="hui-grid__panel-heading">
         <strong>{locale.views}</strong>
-        {state.activeId && state.dirty && (
-          <Button
-            size="small"
-            type="link"
-            icon={<SaveOutlined />}
-            onClick={() => instance.views.save(state.activeId!)}
-          >
-            {locale.save}
-          </Button>
-        )}
+        {state.activeId &&
+          state.dirty &&
+          !state.items.find((view) => view.id === state.activeId)?.readonly && (
+            <Button
+              size="small"
+              type="link"
+              icon={<SaveOutlined />}
+              onClick={() => instance.views.save(state.activeId!)}
+            >
+              {locale.save}
+            </Button>
+          )}
       </div>
       <button className="hui-grid__view-item" type="button" onClick={() => instance.views.apply()}>
         <span>{locale.defaultView}</span>
@@ -76,43 +78,45 @@ export function GridViewPanel<Row extends object>({ className }: GridViewPanelPr
             </button>
           )}
           {state.activeId === view.id && <Badge status={state.dirty ? 'warning' : 'success'} />}
-          {!view.readonly && (
-            <>
-              <Tooltip title={locale.rename}>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<EditOutlined />}
-                  aria-label={`${locale.rename}: ${view.name}`}
-                  onClick={() => {
-                    setRenaming(view.id);
-                    setRenameValue(view.name);
-                  }}
-                />
-              </Tooltip>
-              <Tooltip title={locale.duplicate}>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<CopyOutlined />}
-                  aria-label={`${locale.duplicate}: ${view.name}`}
-                  onClick={() => instance.views.duplicate(view.id)}
-                />
-              </Tooltip>
-              <Popconfirm
-                title={`${locale.remove} ${view.name}?`}
-                onConfirm={() => instance.views.remove(view.id)}
-              >
-                <Button
-                  size="small"
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  aria-label={`${locale.remove}: ${view.name}`}
-                />
-              </Popconfirm>
-            </>
-          )}
+          <>
+            {!view.readonly && (
+              <>
+                <Tooltip title={locale.rename}>
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<EditOutlined />}
+                    aria-label={`${locale.rename}: ${view.name}`}
+                    onClick={() => {
+                      setRenaming(view.id);
+                      setRenameValue(view.name);
+                    }}
+                  />
+                </Tooltip>
+                <Popconfirm
+                  title={`${locale.remove} ${view.name}?`}
+                  onConfirm={() => instance.views.remove(view.id)}
+                >
+                  <Button
+                    size="small"
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    aria-label={`${locale.remove}: ${view.name}`}
+                  />
+                </Popconfirm>
+              </>
+            )}
+            <Tooltip title={locale.duplicate}>
+              <Button
+                size="small"
+                type="text"
+                icon={<CopyOutlined />}
+                aria-label={`${locale.duplicate}: ${view.name}`}
+                onClick={() => instance.views.duplicate(view.id)}
+              />
+            </Tooltip>
+          </>
         </div>
       ))}
       <Divider />
@@ -168,12 +172,12 @@ export function GridViewTrigger<Row extends object>({
   const button =
     typeof trigger === 'function'
       ? trigger({ open, activeName, dirty: state.dirty })
-      : trigger || (
+      : (trigger ?? (
           <Button size="small" type="text" icon={<UnorderedListOutlined />}>
             {activeName}
             {state.dirty ? ' •' : ''}
           </Button>
-        );
+        ));
   return (
     <Popover
       open={open}

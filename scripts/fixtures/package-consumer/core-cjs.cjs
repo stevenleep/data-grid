@@ -1,5 +1,21 @@
 const assert = require('node:assert/strict');
-const { createGrid, createLocalSource, defineGrid } = require('@huiyun/data-grid/core');
+const core = require('@huiyun/data-grid/core');
+const { createGrid, createLocalSource, defineGrid } = core;
+
+for (const implementationSymbol of [
+  'GridStore',
+  'definitionSignature',
+  'isResolvedGridDefinition',
+  'cloneJson',
+  'createGridId',
+  'normalizeError',
+]) {
+  assert.equal(
+    implementationSymbol in core,
+    false,
+    `${implementationSymbol} leaked through the public Core runtime entry`,
+  );
+}
 
 const definition = defineGrid({
   id: 'core-cjs-consumer',

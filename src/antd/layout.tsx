@@ -14,8 +14,7 @@ import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { renderGridValue } from './cells';
 import { resolveGridLocale } from './locale';
-import { operatorLabel } from './operators';
-import { gridNodeText, renderGridNode } from './render';
+import { gridNodeText, renderGridNode, safeGridText } from './render';
 
 function classes(...values: Array<string | undefined | false>) {
   return values.filter(Boolean).join(' ');
@@ -268,6 +267,7 @@ export function GridSummary<Row extends object>({ renderItem }: GridSummaryProps
                           instance.definition.fieldMap.get(item.fieldId)!,
                           ui.language || 'zh-CN',
                           ui.timeZone,
+                          resolveGridLocale(ui.locale, ui.language),
                         )
                       : item.value,
                 )}
@@ -296,6 +296,7 @@ export function GridSelectionSummary<Row extends object>({
   const total = useGridSelector<Row, ReturnType<typeof instance.getState>['data']['total']>(
     (state) => state.data.total,
   );
+  const selectionProps = typeof ui.selection === 'object' ? ui.selection : undefined;
   const count =
     selection.mode === 'explicit'
       ? selection.selectedKeys.length
@@ -303,6 +304,8 @@ export function GridSelectionSummary<Row extends object>({
   if (!count) return null;
   const canSelectAll =
     allowSelectAll &&
+    selectionProps?.type !== 'radio' &&
+    selectionProps?.hideSelectAll !== true &&
     instance.capabilities.selectAllMatching &&
     selection.mode === 'explicit' &&
     total &&
@@ -456,8 +459,8 @@ export function GridActiveFilters<Row extends object>({
       {conditions.slice(0, maxVisible).map((condition) => {
         const field = instance.definition.fieldMap.get(condition.fieldId);
         const value = Array.isArray(condition.value)
-          ? condition.value.join(', ')
-          : String(condition.value ?? '');
+          ? condition.value.map((item) => safeGridText(item)).join(', ')
+          : safeGridText(condition.value);
         return (
           <Tag
             key={condition.id}
@@ -468,7 +471,7 @@ export function GridActiveFilters<Row extends object>({
             }}
           >
             {field ? gridNodeText(field.title) || field.id : condition.fieldId} ·{' '}
-            {operatorLabel(condition.operator, ui.language)}
+            {locale.operatorLabel(condition.operator)}
             {value ? ` · ${value}` : ''}
           </Tag>
         );

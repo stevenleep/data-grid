@@ -1,4 +1,5 @@
 import type { GridLocale } from './types';
+import { operatorLabel } from './operators';
 
 export const zhCN: GridLocale = {
   searchPlaceholder: '搜索数据',
@@ -62,6 +63,16 @@ export const zhCN: GridLocale = {
   moveUp: '上移',
   moveDown: '下移',
   editCell: (title) => `编辑 ${title}`,
+  operatorLabel: (operator) => operatorLabel(operator, 'zh-CN'),
+  not: '非',
+  minimum: '最小值',
+  maximum: '最大值',
+  yes: '是',
+  no: '否',
+  trueLabel: '是',
+  falseLabel: '否',
+  invalidJson: '请输入有效的 JSON',
+  renderFailed: '内容渲染失败',
 };
 
 export const enUS: GridLocale = {
@@ -126,6 +137,16 @@ export const enUS: GridLocale = {
   moveUp: 'Move up',
   moveDown: 'Move down',
   editCell: (title) => `Edit ${title}`,
+  operatorLabel: (operator) => operatorLabel(operator, 'en-US'),
+  not: 'NOT',
+  minimum: 'Minimum',
+  maximum: 'Maximum',
+  yes: 'Yes',
+  no: 'No',
+  trueLabel: 'True',
+  falseLabel: 'False',
+  invalidJson: 'Enter valid JSON',
+  renderFailed: 'Unable to render content',
 };
 
 export function resolveGridLocale(locale?: Partial<GridLocale>, language?: string): GridLocale {

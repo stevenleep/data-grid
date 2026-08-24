@@ -25,6 +25,7 @@ Remote 是后台管理列表的默认选择。
 
 ```ts
 const source = createRemoteSource<Order>({
+  datasetKey: `${tenantId}:orders`,
   capabilities,
   policy: {
     keepPreviousData: true,
@@ -64,12 +65,19 @@ const source = createRemoteSource<Order>({
 - `staleTime` 内直接使用新鲜缓存；`cacheTime` 控制缓存寿命。
 - `keepPreviousData` 在翻页和刷新时保留旧行，避免表格闪空。
 
+### 数据集身份与隔离
+
+`source.datasetKey` 是当前逻辑数据集的稳定、非空字符串，例如 `${tenantId}:orders`。当同一表格实例可在租户、项目、仓库或其他数据边界之间切换时必须设置，不能只依赖一个复用的 `read` 函数。
+
+`datasetKey` 变化会使旧请求、请求/选项缓存、选择、编辑和动作与新数据集隔离，并在非受控查询中重置页码。Local、Remote 和 Controlled 模式都支持该字段。它是客户端身份键，不是授权令牌；服务端仍必须校验租户与行权限。
+
 ## Controlled
 
 当数据已经由 React Query、SWR、路由 Loader 或业务 Store 管理时使用。
 
 ```tsx
 const source = createControlledSource<Order>({
+  datasetKey: `${tenantId}:orders`,
   result: {
     rows: query.data?.items ?? [],
     total: query.data ? { value: query.data.total, accuracy: 'exact' } : undefined,

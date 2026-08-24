@@ -22,6 +22,10 @@
   border-radius: var(--ant-border-radius-lg, 8px);
 }
 
+.hui-grid__antd-app {
+  display: contents;
+}
+
 .hui-grid__toolbar,
 .hui-grid__footer {
   display: flex;
@@ -300,7 +304,8 @@
 }
 
 .hui-grid__panel {
-  width: 360px;
+  width: min(360px, calc(100vw - 32px));
+  max-width: 100%;
   color: var(--hui-grid-text);
 }
 
@@ -332,7 +337,7 @@
 }
 
 .hui-grid__filter-panel {
-  width: min(760px, calc(100vw - 48px));
+  width: min(760px, calc(100vw - 32px));
 }
 
 .hui-grid__filter-group {
@@ -407,7 +412,7 @@
 }
 
 .hui-grid__sort-panel {
-  width: 560px;
+  width: min(560px, calc(100vw - 32px));
 }
 
 .hui-grid__sort-rules {
@@ -447,7 +452,7 @@
 }
 
 .hui-grid__view-panel {
-  width: 300px;
+  width: min(300px, calc(100vw - 32px));
 }
 
 .hui-grid__view-item {
@@ -494,6 +499,11 @@
 }
 
 @media (max-width: 768px) {
+  .hui-grid__panel {
+    max-height: min(70vh, 640px);
+    overflow: auto;
+  }
+
   .hui-grid__toolbar,
   .hui-grid__footer {
     align-items: flex-start;
@@ -512,7 +522,32 @@
     flex-wrap: wrap;
   }
 
+  .hui-grid__filter-rule-main,
   .hui-grid__filter-value {
-    min-width: 240px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .hui-grid__filter-rule-main > .ant-select:first-child,
+  .hui-grid__filter-rule-main > .ant-select:last-child {
+    width: 50%;
+  }
+
+  .hui-grid__sort-rule {
+    grid-template-columns: minmax(0, 1fr) minmax(88px, 0.7fr);
+  }
+
+  .hui-grid__sort-rule > :nth-child(3) {
+    grid-column: 1;
+  }
+
+  .hui-grid__sort-rule > :last-child {
+    grid-column: 2;
+    justify-self: end;
+  }
+
+  .hui-grid__summary,
+  .hui-grid__selection-bar {
+    flex-wrap: wrap;
   }
 }

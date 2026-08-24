@@ -50,10 +50,12 @@ const source = useMemo(() => createRemoteSource(...), [tenantId]);
 
 ## 包体积
 
-Ant Design、React 和图标是 peer dependencies，不会打入 npm 库产物。按层级导入可以让非 UI 环境只消费 Core：
+Ant Design、React、React DOM 和图标是 optional peer dependencies，不会打入 npm 库产物。按层级导入可以让非 UI 环境只消费 Core，且不安装上述 UI peers：
 
 ```ts
 import { createGrid, compileGridQuery } from '@huiyun/data-grid/core';
 ```
 
-仓库 Demo 为单页完整演示，会包含 AntD 运行时代码；它的构建体积不代表 npm 库产物体积。
+使用根入口或 `/antd` 时，应用 bundle 仍会包含它真正使用的 UI 运行时；peer 只避免重复打包，不会让 UI 代码消失。仓库 Demo 为单页完整演示，会包含 AntD 运行时代码，因此它的构建体积不代表 npm 库产物体积。
+
+`pnpm demo:build` 会校验 Demo 已拆分为多个 chunk，并对单 chunk 和全部 JavaScript 的 gzip 大小执行预算，防止无意的依赖或全量导入回归。

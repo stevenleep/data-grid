@@ -17,19 +17,27 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import dayjs from 'dayjs';
-import { useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { GridOption, GridResolvedField, GridRowKey } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useGridOptions } from './hooks';
+import {
+  getDateTimeFormatter,
+  getNumberFormatter,
+  gridDayjsValue,
+  parseGridDate,
+  resolveGridTimeZone,
+  resolveIntlLocale,
+} from './intl';
 import { resolveGridLocale } from './locale';
-import { gridNodeText, renderGridNode } from './render';
+import { gridNodeText, renderGridNode, safeGridText } from './render';
+import type { GridLocale } from './types';
 
 const emptyCell = <span className="hui-grid__empty-value">—</span>;
 
 function safeUrl(value: unknown, image = false): string | undefined {
-  const url = String(value ?? '').trim();
+  const url = safeGridText(value).trim();
   if (!url) return undefined;
   if (/^(?:\/|\.\/|\.\.\/|#|\?)/.test(url)) return url;
   const scheme = url.match(/^([a-z][a-z\d+.-]*):/i)?.[1]?.toLocaleLowerCase();
@@ -41,15 +49,30 @@ function safeUrl(value: unknown, image = false): string | undefined {
 }
 
 function optionLabel(value: unknown, options: GridOption[] | undefined): ReactNode | undefined {
-  const label = options?.find((option) => String(option.value) === String(value))?.label;
+  const key = entityOptionValue(value);
+  const label = options?.find((option) => Object.is(option.value, key))?.label;
   return label === undefined ? undefined : renderGridNode(label);
 }
 
+function entityOptionValue(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  try {
+    const record = value as Record<string, unknown>;
+    return record.value ?? record.id ?? record.key ?? value;
+  } catch {
+    return value;
+  }
+}
+
 function objectLabel(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value !== 'object') return String(value);
-  const record = value as Record<string, unknown>;
-  return String(record.label ?? record.name ?? record.title ?? record.id ?? '');
+  try {
+    if (value == null) return '';
+    if (typeof value !== 'object') return safeGridText(value);
+    const record = value as Record<string, unknown>;
+    return safeGridText(record.label ?? record.name ?? record.title ?? record.id ?? value);
+  } catch {
+    return safeGridText(value);
+  }
 }
 
 function decimalText(
@@ -57,16 +80,16 @@ function decimalText(
   locale: string,
   maximumFractionDigits: number | null = 20,
 ): string {
-  const raw = String(value).trim();
+  const raw = safeGridText(value).trim();
   if (!/^[+-]?\d+(\.\d+)?$/.test(raw)) return raw;
   const [integer = '0', fraction] = raw.replace(/^\+/, '').split('.');
   if (maximumFractionDigits !== null && canSafelyFormatDecimal(raw)) {
     const number = Number(raw);
     if (Number.isFinite(number)) {
-      return new Intl.NumberFormat(locale, { maximumFractionDigits }).format(number);
+      return getNumberFormatter(locale, { maximumFractionDigits }).format(number);
     }
   }
-  const parts = new Intl.NumberFormat(locale).formatToParts(1234.5);
+  const parts = getNumberFormatter(locale).formatToParts(1234.5);
   const group = parts.find((part) => part.type === 'group')?.value || ',';
   const decimal = parts.find((part) => part.type === 'decimal')?.value || '.';
   const sign = integer.startsWith('-') ? '-' : '';
@@ -80,7 +103,7 @@ function decimalText(
 }
 
 function canSafelyFormatDecimal(value: unknown): boolean {
-  const raw = String(value).trim().replace(/^\+/, '');
+  const raw = safeGridText(value).trim().replace(/^\+/, '');
   if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return false;
   const number = Number(raw);
   if (!Number.isFinite(number)) return false;
@@ -90,17 +113,12 @@ function canSafelyFormatDecimal(value: unknown): boolean {
 }
 
 function dateText(value: unknown, locale: string, timeZone: string | undefined, withTime: boolean) {
-  const dateOnly = !withTime && typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
-  const date = dateOnly
-    ? new Date(`${value}T00:00:00.000Z`)
-    : value instanceof Date
-      ? value
-      : new Date(String(value));
-  if (Number.isNaN(date.valueOf())) return String(value);
-  return new Intl.DateTimeFormat(locale, {
+  const date = parseGridDate(value, withTime);
+  if (!date) return safeGridText(value);
+  return getDateTimeFormatter(locale, {
     dateStyle: 'medium',
     ...(withTime ? { timeStyle: 'short' as const } : {}),
-    ...(dateOnly ? { timeZone: 'UTC' } : timeZone ? { timeZone } : {}),
+    timeZone: withTime ? resolveGridTimeZone(timeZone) : 'UTC',
   }).format(date);
 }
 
@@ -110,7 +128,7 @@ function renderFile(value: unknown) {
     <Space size={4} wrap>
       {values.map((item, index) => {
         const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-        const label = String(record.name ?? record.label ?? item ?? 'File');
+        const label = safeGridText(record.name ?? record.label ?? item ?? 'File', 'File');
         const href = safeUrl(record.url);
         return href ? (
           <Typography.Link key={`${label}-${index}`} href={href} target="_blank" rel="noreferrer">
@@ -127,9 +145,14 @@ function renderFile(value: unknown) {
 }
 
 function renderDuration(value: unknown, field: GridResolvedField<object>) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return String(value);
-  const unit = String(field.meta?.durationUnit || 'milliseconds');
+  let number: number;
+  try {
+    number = Number(value);
+  } catch {
+    return safeGridText(value);
+  }
+  if (!Number.isFinite(number)) return safeGridText(value);
+  const unit = safeGridText(field.meta?.durationUnit || 'milliseconds');
   const milliseconds =
     unit === 'seconds' ? number * 1000 : unit === 'minutes' ? number * 60_000 : number;
   const hours = Math.floor(milliseconds / 3_600_000);
@@ -149,162 +172,185 @@ export function renderGridValue<Row extends object>(
   field: GridResolvedField<Row>,
   locale: string,
   timeZone?: string,
+  labels?: Pick<GridLocale, 'trueLabel' | 'falseLabel'>,
 ): ReactNode {
   if (field.isEmpty(value)) return emptyCell;
   const options = Array.isArray(field.options) ? field.options : undefined;
+  const resolvedLocale = resolveIntlLocale(locale);
 
-  switch (field.valueType) {
-    case 'number': {
-      const number = Number(value);
-      return Number.isFinite(number)
-        ? new Intl.NumberFormat(locale, { maximumFractionDigits: 20 }).format(number)
-        : String(value);
-    }
-    case 'decimal':
-      return decimalText(value, locale);
-    case 'money': {
-      const record =
-        value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
-      const amount = record?.amount ?? value;
-      const currency = String(record?.currency ?? field.meta?.currency ?? 'CNY');
-      const configuredDigits = Number(field.meta?.maximumFractionDigits ?? 2);
-      const maximumFractionDigits = Number.isFinite(configuredDigits)
-        ? Math.min(20, Math.max(0, Math.trunc(configuredDigits)))
-        : 2;
-      const number = Number(amount);
-      if (Number.isFinite(number) && canSafelyFormatDecimal(amount)) {
-        try {
-          return new Intl.NumberFormat(locale, {
-            style: 'currency',
-            currency,
-            maximumFractionDigits,
-          }).format(number);
-        } catch {
-          // Invalid currency identifiers fall back to a safe, exact text representation.
+  try {
+    switch (field.valueType) {
+      case 'number': {
+        const number = Number(value);
+        return Number.isFinite(number)
+          ? getNumberFormatter(resolvedLocale, { maximumFractionDigits: 20 }).format(number)
+          : safeGridText(value);
+      }
+      case 'decimal':
+        return decimalText(value, resolvedLocale);
+      case 'money': {
+        const record =
+          value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+        const amount = record?.amount ?? value;
+        const currency = safeGridText(record?.currency ?? field.meta?.currency ?? 'CNY', 'CNY');
+        const configuredDigits = Number(field.meta?.maximumFractionDigits ?? 2);
+        const maximumFractionDigits = Number.isFinite(configuredDigits)
+          ? Math.min(20, Math.max(0, Math.trunc(configuredDigits)))
+          : 2;
+        const number = Number(amount);
+        if (Number.isFinite(number) && canSafelyFormatDecimal(amount)) {
+          try {
+            return getNumberFormatter(resolvedLocale, {
+              style: 'currency',
+              currency,
+              maximumFractionDigits,
+            }).format(number);
+          } catch {
+            // Invalid currency identifiers fall back to a safe, exact text representation.
+          }
         }
+        return `${currency} ${decimalText(amount, resolvedLocale, null)}`;
       }
-      return `${currency} ${decimalText(amount, locale, null)}`;
-    }
-    case 'percent': {
-      const scale = field.meta?.percentScale === 'ratio' ? 1 : 100;
-      const number = Number(value);
-      return Number.isFinite(number)
-        ? new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 2 }).format(
-            number / scale,
-          )
-        : String(value);
-    }
-    case 'duration':
-      return renderDuration(value, field as unknown as GridResolvedField<object>);
-    case 'boolean':
-      return value === true || value === 1 || value === '1' ? (
-        <CheckCircleFilled className="hui-grid__boolean--true" aria-label="true" />
-      ) : (
-        <CloseCircleFilled className="hui-grid__boolean--false" aria-label="false" />
-      );
-    case 'select':
-    case 'status': {
-      const option = options?.find((item) => String(item.value) === String(value));
-      return <Tag color={option?.color}>{optionLabel(value, options) ?? objectLabel(value)}</Tag>;
-    }
-    case 'multiSelect': {
-      const values = Array.isArray(value) ? value : [value];
-      return (
-        <Space size={[4, 2]} wrap>
-          {values.map((item, index) => (
-            <Tag key={`${String(item)}-${index}`}>
-              {optionLabel(item, options) ?? objectLabel(item)}
-            </Tag>
-          ))}
-        </Space>
-      );
-    }
-    case 'user':
-    case 'relation': {
-      const values = Array.isArray(value) ? value : [value];
-      return (
-        <Space size={6} wrap>
-          {values.map((item, index) => {
-            const record =
-              item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-            const label = optionLabel(item, options) ?? objectLabel(item);
-            const avatar =
-              typeof record.avatar === 'string' ? safeUrl(record.avatar, true) : undefined;
-            const labelText = gridNodeText(label) || objectLabel(item) || gridNodeText(field.title);
-            return (
-              <span className="hui-grid__entity" key={`${String(label)}-${index}`}>
-                {field.valueType === 'user' && (
-                  <Avatar size={18} src={avatar} alt={labelText}>
-                    {objectLabel(item).slice(0, 1)}
-                  </Avatar>
-                )}
-                <span>{label}</span>
-              </span>
-            );
-          })}
-        </Space>
-      );
-    }
-    case 'date':
-      return dateText(value, locale, timeZone, false);
-    case 'dateTime':
-      return dateText(value, locale, timeZone, true);
-    case 'link': {
-      const record =
-        value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
-      const href = String(record?.url ?? record?.href ?? value);
-      const label = String(record?.label ?? record?.name ?? href);
-      const safeHref = safeUrl(href);
-      if (!safeHref) return label;
-      return (
-        <Typography.Link href={safeHref} target="_blank" rel="noreferrer">
-          <LinkOutlined /> {label}
-        </Typography.Link>
-      );
-    }
-    case 'email':
-      return <Typography.Link href={`mailto:${String(value)}`}>{String(value)}</Typography.Link>;
-    case 'phone':
-      return <Typography.Link href={`tel:${String(value)}`}>{String(value)}</Typography.Link>;
-    case 'image': {
-      const values = Array.isArray(value) ? value : [value];
-      return (
-        <Space size={4}>
-          {values.slice(0, 3).map((item, index) => {
-            const record =
-              item && typeof item === 'object' ? (item as Record<string, unknown>) : undefined;
-            const source = safeUrl(
-              typeof item === 'string' ? item : String(record?.url ?? ''),
-              true,
-            );
-            const alt = String(
-              (record?.alt ?? record?.name ?? record?.label ?? gridNodeText(field.title)) ||
+      case 'percent': {
+        const scale = field.meta?.percentScale === 'ratio' ? 1 : 100;
+        const number = Number(value);
+        return Number.isFinite(number)
+          ? getNumberFormatter(resolvedLocale, {
+              style: 'percent',
+              maximumFractionDigits: 2,
+            }).format(number / scale)
+          : safeGridText(value);
+      }
+      case 'duration':
+        return renderDuration(value, field as unknown as GridResolvedField<object>);
+      case 'boolean':
+        return value === true || value === 1 || value === '1' ? (
+          <CheckCircleFilled
+            className="hui-grid__boolean--true"
+            aria-label={labels?.trueLabel || 'true'}
+          />
+        ) : (
+          <CloseCircleFilled
+            className="hui-grid__boolean--false"
+            aria-label={labels?.falseLabel || 'false'}
+          />
+        );
+      case 'select':
+      case 'status': {
+        const optionValue = entityOptionValue(value);
+        const option = options?.find((item) => Object.is(item.value, optionValue));
+        return <Tag color={option?.color}>{optionLabel(value, options) ?? objectLabel(value)}</Tag>;
+      }
+      case 'multiSelect': {
+        const values = Array.isArray(value) ? value : [value];
+        return (
+          <Space size={[4, 2]} wrap>
+            {values.map((item, index) => {
+              const optionValue = entityOptionValue(item);
+              const option = options?.find((candidate) => Object.is(candidate.value, optionValue));
+              return (
+                <Tag color={option?.color} key={`${safeGridText(item)}-${index}`}>
+                  {optionLabel(item, options) ?? objectLabel(item)}
+                </Tag>
+              );
+            })}
+          </Space>
+        );
+      }
+      case 'user':
+      case 'relation': {
+        const values = Array.isArray(value) ? value : [value];
+        return (
+          <Space size={6} wrap>
+            {values.map((item, index) => {
+              const record =
+                item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+              const label = optionLabel(item, options) ?? objectLabel(item);
+              const avatar =
+                typeof record.avatar === 'string' ? safeUrl(record.avatar, true) : undefined;
+              const labelText =
+                gridNodeText(label) || objectLabel(item) || gridNodeText(field.title);
+              return (
+                <span className="hui-grid__entity" key={`${gridNodeText(label)}-${index}`}>
+                  {field.valueType === 'user' && (
+                    <Avatar size={18} src={avatar} alt={labelText}>
+                      {objectLabel(item).slice(0, 1)}
+                    </Avatar>
+                  )}
+                  <span>{label}</span>
+                </span>
+              );
+            })}
+          </Space>
+        );
+      }
+      case 'date':
+        return dateText(value, resolvedLocale, timeZone, false);
+      case 'dateTime':
+        return dateText(value, resolvedLocale, timeZone, true);
+      case 'link': {
+        const record =
+          value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+        const href = safeGridText(record?.url ?? record?.href ?? value);
+        const label = safeGridText(record?.label ?? record?.name ?? href);
+        const safeHref = safeUrl(href);
+        if (!safeHref) return label;
+        return (
+          <Typography.Link href={safeHref} target="_blank" rel="noreferrer">
+            <LinkOutlined /> {label}
+          </Typography.Link>
+        );
+      }
+      case 'email': {
+        const text = safeGridText(value);
+        return <Typography.Link href={`mailto:${text}`}>{text}</Typography.Link>;
+      }
+      case 'phone': {
+        const text = safeGridText(value);
+        return <Typography.Link href={`tel:${text}`}>{text}</Typography.Link>;
+      }
+      case 'image': {
+        const values = Array.isArray(value) ? value : [value];
+        return (
+          <Space size={4}>
+            {values.slice(0, 3).map((item, index) => {
+              const record =
+                item && typeof item === 'object' ? (item as Record<string, unknown>) : undefined;
+              const source = safeUrl(
+                typeof item === 'string' ? item : safeGridText(record?.url),
+                true,
+              );
+              const alt = safeGridText(
+                record?.alt ?? record?.name ?? record?.label ?? gridNodeText(field.title),
                 `Image ${index + 1}`,
-            );
-            return source ? (
-              <Image key={`${source}-${index}`} width={28} height={28} src={source} alt={alt} />
-            ) : null;
-          })}
-        </Space>
-      );
-    }
-    case 'file':
-      return renderFile(value);
-    case 'json': {
-      let content: string;
-      try {
-        content = JSON.stringify(value);
-      } catch {
-        content = String(value);
+              );
+              return source ? (
+                <Image key={`${source}-${index}`} width={28} height={28} src={source} alt={alt} />
+              ) : null;
+            })}
+          </Space>
+        );
       }
-      return <Typography.Text code>{content}</Typography.Text>;
+      case 'file':
+        return renderFile(value);
+      case 'json': {
+        let content: string;
+        try {
+          content = JSON.stringify(value) ?? safeGridText(value);
+        } catch {
+          content = safeGridText(value);
+        }
+        return <Typography.Text code>{content}</Typography.Text>;
+      }
+      case 'longText': {
+        const text = safeGridText(value);
+        return <Typography.Text ellipsis={{ tooltip: text }}>{text}</Typography.Text>;
+      }
+      default:
+        return safeGridText(value);
     }
-    case 'longText':
-      return (
-        <Typography.Text ellipsis={{ tooltip: String(value) }}>{String(value)}</Typography.Text>
-      );
-    default:
-      return String(value);
+  } catch {
+    return safeGridText(value, '—');
   }
 }
 
@@ -319,7 +365,8 @@ export function GridCell<Row extends object>({ row, rowIndex, field }: GridCellP
   const ui = useGridUi<Row>();
   const value = field.getValue(row);
   if (field.render) return renderGridNode(field.render({ value, row, rowIndex, field, instance }));
-  return renderGridValue(value, field, ui.language || 'zh-CN', ui.timeZone);
+  const locale = resolveGridLocale(ui.locale, ui.language);
+  return renderGridValue(value, field, ui.language || 'zh-CN', ui.timeZone, locale);
 }
 
 interface EditingCellSnapshot {
@@ -349,6 +396,19 @@ export interface GridEditableCellProps<Row extends object> extends GridCellProps
   children: ReactNode;
 }
 
+function jsonEditorText(value: unknown): string {
+  if (value === undefined) return '';
+  try {
+    return JSON.stringify(value, null, 2) ?? safeGridText(value);
+  } catch {
+    return safeGridText(value);
+  }
+}
+
+function isOptionPrimitive(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
 export function GridEditableCell<Row extends object>({
   row,
   rowIndex,
@@ -376,15 +436,27 @@ export function GridEditableCell<Row extends object>({
   const draft = active ? editing.draft : field.getValue(row);
   const editorType = field.edit && field.edit.editor ? field.edit.editor : field.valueType;
   const usesOptions = ['select', 'multiSelect', 'status', 'user', 'relation'].includes(editorType);
-  const options = useGridOptions(field, '', active && usesOptions);
+  const [optionSearch, setOptionSearch] = useState('');
+  const [jsonText, setJsonText] = useState('');
+  const [localError, setLocalError] = useState<string>();
+  const activeEditorKey = active ? `${String(rowKey)}:${field.id}` : '';
+  useEffect(() => {
+    setOptionSearch('');
+    setLocalError(undefined);
+    if (active && editorType === 'json') setJsonText(jsonEditorText(draft));
+    // Draft is intentionally captured only when a new cell editor opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeEditorKey, editorType]);
+  const options = useGridOptions(field, optionSearch, active && usesOptions && !field.editor);
   const committingRef = useRef(false);
   const canEdit = instance.editing.canEdit(row, field.id);
-  const editingError =
+  const coreEditingError =
     editing.errorCode === 'required'
       ? locale.required
       : editing.errorCode === 'saveFailed'
         ? locale.saveFailed
         : editing.error;
+  const editingError = localError || coreEditingError || options.error?.message;
   const commit = async () => {
     if (committingRef.current) return false;
     committingRef.current = true;
@@ -414,13 +486,23 @@ export function GridEditableCell<Row extends object>({
       }),
     );
   } else if (['number', 'decimal', 'money', 'percent', 'duration'].includes(editorType)) {
+    const moneyRecord =
+      editorType === 'money' && draft && typeof draft === 'object' && !Array.isArray(draft)
+        ? (draft as Record<string, unknown>)
+        : undefined;
+    const numericDraft = moneyRecord?.amount ?? draft;
+    const stringMode =
+      editorType === 'decimal' || (editorType === 'money' && typeof numericDraft === 'string');
     input = (
       <InputNumber
         size="small"
         autoFocus
-        stringMode={editorType === 'decimal' || editorType === 'money'}
-        value={draft as number | string | null | undefined}
-        onChange={instance.editing.setDraft}
+        stringMode={stringMode}
+        placeholder={field.edit ? field.edit.placeholder : undefined}
+        value={numericDraft as number | string | null | undefined}
+        onChange={(value) =>
+          instance.editing.setDraft(moneyRecord ? { ...moneyRecord, amount: value } : value)
+        }
         onBlur={() => void commit()}
         onKeyDown={(event) => {
           if (event.key === 'Enter') void commit();
@@ -431,31 +513,76 @@ export function GridEditableCell<Row extends object>({
   } else if (
     ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(editorType)
   ) {
+    const multiple =
+      editorType === 'multiSelect' ||
+      (['user', 'relation'].includes(editorType) &&
+        (Array.isArray(draft) || field.meta?.multiple === true));
+    const draftItems = multiple
+      ? Array.isArray(draft)
+        ? draft
+        : draft == null
+          ? []
+          : [draft]
+      : [];
+    const selectedValue = multiple
+      ? draftItems.map(entityOptionValue).filter(isOptionPrimitive)
+      : entityOptionValue(draft);
+    const preserveDomainValue = (value: unknown) => {
+      const candidates = multiple ? draftItems : draft == null ? [] : [draft];
+      return (
+        candidates.find((candidate) => Object.is(entityOptionValue(candidate), value)) ?? value
+      );
+    };
+    const setSelectedDraft = (value: unknown) => {
+      const semanticValue =
+        multiple && Array.isArray(value)
+          ? value.map(preserveDomainValue)
+          : preserveDomainValue(value);
+      instance.editing.setDraft(semanticValue);
+      setLocalError(undefined);
+    };
     input = (
       <Select
         size="small"
         autoFocus
-        open
+        defaultOpen
+        allowClear
+        showSearch={editorType !== 'boolean'}
+        filterOption={Array.isArray(field.options) ? undefined : false}
+        placeholder={field.edit ? field.edit.placeholder : undefined}
         loading={options.loading}
         notFoundContent={
-          options.loading ? <span role="status">{locale.loadingOptions}</span> : undefined
+          options.loading ? (
+            <span role="status">{locale.loadingOptions}</span>
+          ) : options.error ? (
+            <span role="alert">{options.error.message}</span>
+          ) : undefined
         }
-        mode={['multiSelect', 'user', 'relation'].includes(editorType) ? 'multiple' : undefined}
+        mode={multiple ? 'multiple' : undefined}
         options={
           editorType === 'boolean'
             ? [
-                { label: ui.language?.startsWith('en') ? 'Yes' : '是', value: true },
-                { label: ui.language?.startsWith('en') ? 'No' : '否', value: false },
+                { label: locale.yes, value: true },
+                { label: locale.no, value: false },
               ]
             : (options.options.map((option) => ({
                 ...option,
                 label: renderGridNode(option.label),
               })) as Array<{ label: ReactNode; value: string | number | boolean }>)
         }
-        value={draft as string | number | boolean | (string | number)[] | undefined}
+        value={
+          selectedValue as string | number | boolean | (string | number | boolean)[] | undefined
+        }
+        onSearch={editorType === 'boolean' ? undefined : setOptionSearch}
         onChange={(value) => {
-          instance.editing.setDraft(value);
-          queueMicrotask(() => void commit());
+          setSelectedDraft(value);
+          if (!multiple) queueMicrotask(() => void commit());
+        }}
+        onBlur={() => {
+          if (multiple) void commit();
+        }}
+        onOpenChange={(open) => {
+          if (!open && multiple) void commit();
         }}
         onKeyDown={(event) => {
           if (event.key === 'Escape') instance.editing.cancel();
@@ -463,14 +590,15 @@ export function GridEditableCell<Row extends object>({
       />
     );
   } else if (editorType === 'date' || editorType === 'dateTime') {
-    const current = draft ? dayjs(String(draft)) : null;
+    const current = gridDayjsValue(draft, editorType === 'dateTime', ui.timeZone);
     input = (
       <DatePicker
         size="small"
         autoFocus
-        open
+        defaultOpen
+        placeholder={field.edit ? field.edit.placeholder : undefined}
         showTime={editorType === 'dateTime'}
-        value={current?.isValid() ? current : null}
+        value={current}
         onChange={(date) => {
           const value = date
             ? editorType === 'date'
@@ -485,12 +613,54 @@ export function GridEditableCell<Row extends object>({
         }}
       />
     );
+  } else if (editorType === 'longText' || editorType === 'json') {
+    const inputValue = editorType === 'json' ? jsonText : draft == null ? '' : safeGridText(draft);
+    const setTextDraft = (value: string) => {
+      if (editorType !== 'json') {
+        instance.editing.setDraft(value);
+        return;
+      }
+      setJsonText(value);
+      if (!value.trim()) {
+        setLocalError(undefined);
+        instance.editing.setDraft(undefined);
+        return;
+      }
+      try {
+        instance.editing.setDraft(JSON.parse(value));
+        setLocalError(undefined);
+      } catch {
+        setLocalError(locale.invalidJson);
+      }
+    };
+    input = (
+      <Input.TextArea
+        size="small"
+        autoFocus
+        autoSize={{ minRows: editorType === 'json' ? 3 : 2, maxRows: 8 }}
+        placeholder={field.edit ? field.edit.placeholder : undefined}
+        value={inputValue}
+        aria-invalid={Boolean(localError)}
+        onChange={(event) => setTextDraft(event.target.value)}
+        onBlur={() => {
+          if (!localError) void commit();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !localError) {
+            event.preventDefault();
+            void commit();
+          }
+          if (event.key === 'Escape') instance.editing.cancel();
+        }}
+      />
+    );
   } else {
     input = (
       <Input
         size="small"
         autoFocus
-        value={draft == null ? '' : String(draft)}
+        placeholder={field.edit ? field.edit.placeholder : undefined}
+        value={draft == null ? '' : safeGridText(draft)}
         onChange={(event) => instance.editing.setDraft(event.target.value)}
         onBlur={() => void commit()}
         onKeyDown={(event) => {

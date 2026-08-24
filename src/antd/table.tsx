@@ -17,6 +17,7 @@ import {
   createGridId,
   type GridColumnState,
   type GridResolvedColumn,
+  type GridResolvedField,
   type GridSort,
 } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
@@ -24,7 +25,7 @@ import { GridActions } from './actions';
 import { GridCell, GridEditableCell } from './cells';
 import { useGridUi } from './context';
 import { resolveGridLocale } from './locale';
-import { gridNodeText, renderGridNode } from './render';
+import { GridRenderErrorBoundary, gridNodeText, renderGridNode } from './render';
 import type {
   GridCellClickContext,
   GridCellInteractionContext,
@@ -107,11 +108,30 @@ function isInteractiveDescendant(
 ): boolean {
   if (!(target instanceof Element) || !(currentTarget instanceof Element)) return false;
   const interactive = target.closest(
-    'a, button, input, select, textarea, [role="button"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]',
+    'a, button, input, select, textarea, summary, audio[controls], video[controls], [data-grid-stop-interaction], [aria-haspopup], [role="button"], [role="checkbox"], [role="combobox"], [role="link"], [role="menuitem"], [role="option"], [role="radio"], [role="slider"], [role="spinbutton"], [role="switch"], [role="tab"], [contenteditable]:not([contenteditable="false"])',
   );
   return Boolean(
     interactive && interactive !== currentTarget && currentTarget.contains(interactive),
   );
+}
+
+function GridResolvedCellContent<Row extends object>({
+  column,
+  field,
+  row,
+  rowIndex,
+}: {
+  column: GridResolvedColumn<Row>;
+  field: GridResolvedField<Row> | undefined;
+  row: Row;
+  rowIndex: number;
+}) {
+  const instance = useGridInstance<Row>();
+  const value = field?.getValue(row);
+  if (column.render) {
+    return renderGridNode(column.render({ value, row, rowIndex, column, field, instance }));
+  }
+  return field ? <GridCell row={row} rowIndex={rowIndex} field={field} /> : null;
 }
 
 export function GridTable<Row extends object>({
@@ -219,7 +239,10 @@ export function GridTable<Row extends object>({
           ? columnState.pinned[column.id] || undefined
           : column.fixed;
       const activeSort = field ? sorts.find((sort) => sort.fieldId === field.id) : undefined;
+      const activeSortIndex = field ? sorts.findIndex((sort) => sort.fieldId === field.id) : -1;
       const platform = (column.platform || {}) as ColumnType<Row>;
+      const minimumWidth = column.minWidth || 72;
+      const maximumWidth = column.maxWidth || Number.MAX_SAFE_INTEGER;
       return {
         ...platform,
         key: column.id,
@@ -246,6 +269,9 @@ export function GridTable<Row extends object>({
                 tabIndex={0}
                 aria-orientation="vertical"
                 aria-label={locale.resizeColumn(gridNodeText(column.title) || column.id)}
+                aria-valuemin={minimumWidth}
+                aria-valuemax={maximumWidth}
+                aria-valuenow={width}
                 onPointerDown={(event) => startResize(event, column, width)}
                 onKeyDown={(event) => {
                   if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -260,30 +286,35 @@ export function GridTable<Row extends object>({
             )}
           </div>
         ),
-        sorter: field?.sort
-          ? instance.capabilities.sort.max > 1
-            ? {
-                multiple: Math.max(
-                  1,
-                  instance.capabilities.sort.max - instance.definition.fields.indexOf(field),
-                ),
-              }
-            : true
-          : undefined,
+        sorter:
+          field?.sort && instance.capabilities.sort.max > 0
+            ? instance.capabilities.sort.max > 1
+              ? {
+                  multiple: Math.max(
+                    1,
+                    activeSortIndex < 0 ? 1 : instance.capabilities.sort.max - activeSortIndex,
+                  ),
+                }
+              : true
+            : undefined,
         sortOrder: activeSort ? (activeSort.direction === 'asc' ? 'ascend' : 'descend') : undefined,
         render: (_value: unknown, row: Row, rowIndex: number) => {
-          const value = field?.getValue(row);
-          const content = column.render ? (
-            renderGridNode(column.render({ value, row, rowIndex, column, field, instance }))
-          ) : field ? (
-            <GridCell row={row} rowIndex={rowIndex} field={field} />
-          ) : null;
-          return field?.edit && instance.definition.editing ? (
-            <GridEditableCell row={row} rowIndex={rowIndex} field={field}>
-              {content}
-            </GridEditableCell>
-          ) : (
-            content
+          const content = (
+            <GridResolvedCellContent column={column} field={field} row={row} rowIndex={rowIndex} />
+          );
+          return (
+            <GridRenderErrorBoundary
+              resetKey={row}
+              fallback={<span title={locale.renderFailed}>—</span>}
+            >
+              {field?.edit && instance.definition.editing ? (
+                <GridEditableCell row={row} rowIndex={rowIndex} field={field}>
+                  {content}
+                </GridEditableCell>
+              ) : (
+                content
+              )}
+            </GridRenderErrorBoundary>
           );
         },
         onCell: (row: Row, rowIndex = 0) => {
@@ -334,11 +365,13 @@ export function GridTable<Row extends object>({
           };
         },
         shouldCellUpdate:
-          platform.shouldCellUpdate ||
-          ((next: Row, previous: Row) => {
-            if (!field) return next !== previous;
-            return !field.equals(field.getValue(next), field.getValue(previous));
-          }),
+          platform.shouldCellUpdate ??
+          (column.render || field?.render || field?.edit
+            ? undefined
+            : (next: Row, previous: Row) => {
+                if (!field) return next !== previous;
+                return !field.equals(field.getValue(next), field.getValue(previous));
+              }),
       };
     };
     const result = nodes.map(build);
@@ -368,6 +401,8 @@ export function GridTable<Row extends object>({
     instance,
     isCellClickable,
     locale.actions,
+    locale.renderFailed,
+    locale.resizeColumn,
     onCellClick,
     rowActionConfig,
     sorts,
@@ -384,11 +419,15 @@ export function GridTable<Row extends object>({
         fixed: suppliedSelection?.fixed ?? true,
         preserveSelectedRowKeys: true,
         selectedRowKeys:
-          selection.mode === 'explicit'
-            ? selection.selectedKeys
-            : data.rows
-                .map(instance.definition.getRowKey)
-                .filter((key) => !selection.excludedKeys.includes(key)),
+          suppliedSelection?.type === 'radio'
+            ? selection.mode === 'explicit'
+              ? selection.selectedKeys.slice(0, 1)
+              : []
+            : selection.mode === 'explicit'
+              ? selection.selectedKeys
+              : data.rows
+                  .map(instance.definition.getRowKey)
+                  .filter((key) => !selection.excludedKeys.includes(key)),
         onSelect: (row, selected, selectedRows, nativeEvent) => {
           suppliedSelection?.onSelect?.(row, selected, selectedRows, nativeEvent);
         },
@@ -414,7 +453,11 @@ export function GridTable<Row extends object>({
       ((instance.definition.columnMap.has(column.id) ? columnState.widths[column.id] : undefined) ||
         column.width ||
         160),
-    (uiSelection ? 40 : 0) + (hasRowActions && rowActionConfig ? rowActionConfig.width || 132 : 0),
+    (uiSelection
+      ? typeof suppliedSelection?.columnWidth === 'number'
+        ? suppliedSelection.columnWidth
+        : 40
+      : 0) + (hasRowActions && rowActionConfig ? rowActionConfig.width || 132 : 0),
   );
   const size =
     columnState.density === 'compact'
@@ -431,7 +474,7 @@ export function GridTable<Row extends object>({
   const onChange: TableProps<Row>['onChange'] = (pagination, tableFilters, sorter, extra) => {
     tableProps.onChange?.(pagination, tableFilters, sorter, extra);
     const values = (Array.isArray(sorter) ? sorter : [sorter]) as SorterResult<Row>[];
-    const nextSorts = values
+    const rawSorts = values
       .filter((item) => item.order && typeof item.columnKey === 'string')
       .flatMap((item) => {
         const column = instance.definition.columnMap.get(String(item.columnKey));
@@ -451,9 +494,30 @@ export function GridTable<Row extends object>({
               : {}),
           },
         ];
-      })
-      .slice(0, instance.capabilities.sort.max);
-    if (stableSorts(nextSorts) !== stableSorts(sorts)) instance.query.setSorts(nextSorts, 'user');
+      });
+    const rawByField = new Map(rawSorts.map((sort) => [sort.fieldId, sort]));
+    const nextSorts: GridSort[] = sorts
+      .filter((sort) => rawByField.has(sort.fieldId))
+      .map((sort) => ({ ...sort, ...rawByField.get(sort.fieldId), id: sort.id }));
+    rawSorts.forEach((sort) => {
+      if (!nextSorts.some((current) => current.fieldId === sort.fieldId)) nextSorts.push(sort);
+    });
+    const maximumSorts = instance.capabilities.sort.max;
+    const addedFieldIds = new Set(
+      rawSorts
+        .filter((sort) => !sorts.some((current) => current.fieldId === sort.fieldId))
+        .map((sort) => sort.fieldId),
+    );
+    const limitedSorts = addedFieldIds.size
+      ? [
+          ...nextSorts
+            .filter((sort) => !addedFieldIds.has(sort.fieldId))
+            .slice(0, Math.max(0, maximumSorts - addedFieldIds.size)),
+          ...nextSorts.filter((sort) => addedFieldIds.has(sort.fieldId)),
+        ].slice(0, maximumSorts)
+      : nextSorts.slice(0, maximumSorts);
+    if (stableSorts(limitedSorts) !== stableSorts(sorts))
+      instance.query.setSorts(limitedSorts, 'user');
   };
   const onRow: TableProps<Row>['onRow'] = (row, rowIndex = 0) => {
     const suppliedRow = tableProps.onRow?.(row, rowIndex) || {};

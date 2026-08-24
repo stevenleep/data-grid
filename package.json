@@ -90,7 +90,7 @@
     "**/*.css"
   ],
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/clean-style-artifacts.mjs",
     "dev": "tsdown --watch",
     "demo": "pnpm --filter @huiyun/data-grid-demo dev",
     "demo:build": "pnpm --filter @huiyun/data-grid-demo build",
@@ -100,21 +100,40 @@
     "test:watch": "vitest",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
-    "check": "pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm demo:build",
-    "package:check": "pnpm build && pnpm pack:check && pnpm publint && pnpm attw && pnpm consumer:smoke:all",
-    "release:check": "pnpm check && pnpm test:coverage && pnpm package:check",
+    "quality:check": "pnpm format:check && pnpm typecheck && pnpm test:coverage",
+    "check": "pnpm quality:check && pnpm build && pnpm demo:build",
+    "package:inspect": "pnpm pack:check && pnpm publint && pnpm attw",
+    "package:check": "pnpm build && pnpm package:inspect && pnpm consumer:smoke:all",
+    "release:check": "pnpm quality:check && pnpm build && pnpm demo:build && pnpm package:inspect && pnpm consumer:smoke:all",
     "prepublishOnly": "pnpm release:check",
     "pack:check": "pnpm pack --dry-run",
     "publint": "publint",
     "attw": "attw --pack . --profile node16 --entrypoints . core react antd",
     "consumer:smoke": "node scripts/package-smoke.mjs",
-    "consumer:smoke:all": "pnpm consumer:smoke -- --react=18 && pnpm consumer:smoke -- --react=19"
+    "consumer:smoke:core": "pnpm consumer:smoke -- --profile=core-only",
+    "consumer:smoke:minimum": "pnpm consumer:smoke -- --profile=react18-min && pnpm consumer:smoke -- --profile=react19-min",
+    "consumer:smoke:current": "pnpm consumer:smoke -- --profile=react18-current && pnpm consumer:smoke -- --profile=react19-current --with-vite",
+    "consumer:smoke:all": "pnpm consumer:smoke:core && pnpm consumer:smoke:minimum && pnpm consumer:smoke:current"
   },
   "peerDependencies": {
     "@ant-design/icons": ">=6.0.0 <7.0.0",
     "antd": ">=6.0.0 <7.0.0",
     "react": ">=18.0.0 <20.0.0",
     "react-dom": ">=18.0.0 <20.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ant-design/icons": {
+      "optional": true
+    },
+    "antd": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "dependencies": {
     "dayjs": "^1.11.18"
@@ -144,6 +163,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "provenance": true
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
   }
 }

@@ -17,7 +17,7 @@
 
 ## 关系字段 Local 筛选无效
 
-显示值通常是对象，筛选值通常是 id。为该字段提供 `filterPredicate`，按实体 id 比较。Remote source 不受此本地比较问题影响。
+内置 `select`、`multiSelect`、`status`、`user` 和 `relation` 会按 primitive，或对象的 `id` / `value` / `key` 比较。若业务实体使用其他身份字段，为字段提供 `getIdentity` / `equals`；只有需要完全自定义运算符语义时才使用 `filterPredicate`。Remote source 仍由后端解释筛选协议。
 
 ## 排序字段不对
 
@@ -57,13 +57,31 @@
 import '@huiyun/data-grid/style.css';
 ```
 
+## 安装后报缺少 React 或 AntD
+
+UI 依赖被有意声明为 optional peers，使用根入口或 `/antd` 时需要由应用显式安装：
+
+```bash
+pnpm add react react-dom antd @ant-design/icons
+```
+
+使用 `/react` 至少安装 React 与 React DOM。只有 `/core` 完全不需要这些 UI peers。
+
 ## 子路径类型无法解析
 
 `@huiyun/data-grid/core`、`/react` 和 `/antd` 使用现代 `exports`。TypeScript 应配置 `moduleResolution: "Bundler"`、`"Node16"` 或 `"NodeNext"`；旧的 `"node"` 不在支持范围内。不要只添加路径别名掩盖运行时同样无法解析的问题。
 
+## Core-only 项目找不到 `Storage` 或 `AbortSignal`
+
+Core 没有 DOM 运行时依赖，但公共类型使用取消与可选本地存储的标准平台协议。纯服务 TypeScript 项目可在 `tsconfig.json` 的 `compilerOptions.lib` 中加入 `"DOM"`，或提供等价的 ambient `Storage`/`AbortSignal` 类型；这不会把浏览器代码引入 Node 运行时。
+
 ## AntD 上下文告警
 
-`DataGrid` 内部已经提供无额外 DOM 的 AntD App 上下文。业务仍可在应用根部使用自己的 `ConfigProvider` 与 `App`，主题和 locale 会正常继承。
+`DataGrid` 内部通过一个 `display: contents` 包装元素提供 AntD App 上下文，不会新增可见布局盒。业务仍可在应用根部使用自己的 `ConfigProvider` 与 `App`，主题和 locale 会正常继承。
+
+## React 18 下出现 AntD/rc-component 的 `.d.ts` 错误
+
+AntD 6 公开声明支持 React 18，但其当前声明及部分 rc-component 声明会在 `skipLibCheck: false` 下产生库内部冲突（例如 React 19 才有的 `ActionDispatch`）。Vite 等应用通常将 `skipLibCheck` 设为 `true`；这仍会检查业务代码与 Data Grid API。若组织策略强制检查所有依赖声明，请在升级前用项目锁定的 React/AntD/TypeScript 组合验证，并跟进上游修复；Core-only 消费验证不需要该绕过。
 
 ## 发布前检查
 
@@ -71,4 +89,4 @@ import '@huiyun/data-grid/style.css';
 pnpm release:check
 ```
 
-检查范围包括格式、类型、测试与覆盖率、ESM/CJS/声明构建、Demo 构建、导出映射、npm tarball 内容和真实消费项目。完整流程见[维护与发布](./releasing.md)。
+检查范围包括格式、类型、测试与覆盖率、ESM/CJS/声明构建、Demo 构建与 gzip 预算、导出映射、npm tarball 内容、Core-only 安装以及 React 18/19 与 Vite 真实消费项目。完整流程见[维护与发布](./releasing.md)。

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeGridResult } from '../src/core';
+import {
+  createControlledSource,
+  createRemoteSource,
+  normalizeGridOptions,
+  normalizeGridResult,
+  resolveGridCapabilities,
+} from '../src/core';
 
 describe('grid result protocol', () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5])(
@@ -90,5 +96,59 @@ describe('grid result protocol', () => {
         pagination,
       ),
     ).toThrow('cannot provide nextCursor');
+  });
+
+  it('rejects nullable or duplicate options before they reach adapters', () => {
+    expect(() => normalizeGridOptions([{ label: 'None', value: null }])).toThrow('invalid value');
+    expect(() =>
+      normalizeGridOptions([
+        { label: 'One', value: 1 },
+        { label: 'Again', value: 1 },
+      ]),
+    ).toThrow('duplicate option values');
+    expect(normalizeGridOptions([{ label: 'False', value: false }])[0]?.value).toBe(false);
+  });
+
+  it('validates source contracts and cache policy at runtime', () => {
+    expect(() =>
+      resolveGridCapabilities(
+        createRemoteSource(async () => ({ rows: [] }), {
+          datasetKey: '',
+        }),
+      ),
+    ).toThrow('datasetKey');
+    expect(() =>
+      resolveGridCapabilities(
+        createRemoteSource(async () => ({ rows: [] }), {
+          policy: { maxCacheEntries: 0 },
+        }),
+      ),
+    ).toThrow('maxCacheEntries');
+    expect(() =>
+      resolveGridCapabilities(createControlledSource({ result: null as never })),
+    ).toThrow('result object');
+  });
+
+  it('checks page size, lower-bound totals and exact offset page information', () => {
+    const pagination = { type: 'offset', page: 2, pageSize: 2 } as const;
+    expect(() =>
+      normalizeGridResult({ rows: [{ id: 1 }, { id: 2 }, { id: 3 }] }, pagination),
+    ).toThrow('pageSize');
+    expect(() =>
+      normalizeGridResult(
+        { rows: [{ id: 3 }], total: { value: 1, accuracy: 'atLeast' } },
+        pagination,
+      ),
+    ).toThrow('rows already observed');
+    expect(() =>
+      normalizeGridResult(
+        {
+          rows: [{ id: 3 }],
+          total: { value: 3, accuracy: 'exact' },
+          pageInfo: { hasPrevious: false, hasNext: false },
+        },
+        pagination,
+      ),
+    ).toThrow('hasPrevious');
   });
 });

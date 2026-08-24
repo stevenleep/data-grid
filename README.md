@@ -37,12 +37,24 @@ README 只保留概览和核心示例。完整接入说明位于 [docs/README.md
 
 ## 环境与安装
 
-- React 18+
-- Ant Design 6
-- Node.js 20.19+（仓库 CI 与 Vercel Demo 固定使用 Node.js 24）
+- React 18/19（使用 React 或 AntD 层时）
+- React DOM 18/19，与 React 主版本一致
+- Ant Design 6 与 Ant Design Icons 6（使用 AntD 层时）
+- TypeScript 5.4–7.x（类型消费时）
+- Node.js `>=20.19.0 <27`（仓库 CI 与 Vercel Demo 固定使用 Node.js 24）
 
 ```bash
-pnpm add @huiyun/data-grid antd @ant-design/icons
+pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons
+```
+
+UI 依赖都是 optional peers：包不会悄悄选择或安装它们的版本。只用与 UI 无关的 Core 时可只安装包本身：
+
+```bash
+pnpm add @huiyun/data-grid
+```
+
+```ts
+import { compileGridQuery, createGrid } from '@huiyun/data-grid/core';
 ```
 
 在应用入口导入一次样式：
@@ -464,7 +476,7 @@ import { DataGrid, GridTable } from '@huiyun/data-grid/antd';
 import '@huiyun/data-grid/style.css';
 ```
 
-- `@huiyun/data-grid/core`：纯 TypeScript，无 React、Ant Design、DOM 和 CSS 依赖。
+- `@huiyun/data-grid/core`：纯 TypeScript，无 React、Ant Design、CSS 或 DOM 运行时依赖；类型协议使用标准 `AbortSignal` 和可选 `Storage`。
 - `@huiyun/data-grid/react`：实例生命周期、Provider 和 selector 订阅。
 - `@huiyun/data-grid/antd`：Ant Design 6 原子组件与默认配方。
 - 根入口：便捷导出以上公共 API。
@@ -480,7 +492,7 @@ pnpm install
 pnpm release:check
 ```
 
-`release:check` 会验证格式、类型、测试、覆盖率、库与 Demo 构建、包导出，以及实际 tarball 的 ESM、CommonJS、CSS 和类型消费。npm OIDC、Vercel 运行时与正式发版流程见[维护与发布](./docs/releasing.md)。
+`release:check` 会验证格式、类型、测试、覆盖率、库与 Demo 构建/gzip 预算、包导出，以及实际 tarball 的 Core-only、React 18/19、AntD 6、ESM、CommonJS、CSS、TypeScript 和 Vite 消费。npm OIDC、Vercel 运行时与正式发版流程见[维护与发布](./docs/releasing.md)。
 
 `definition.id` 必须稳定；当字段、列或运行时行为发生不兼容变更时提升 `revision`。
 

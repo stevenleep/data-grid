@@ -63,6 +63,42 @@ columns: [
 
 每个值类型提供默认宽度、操作符、codec、空值判断、比较、渲染和编辑器。通过 `definition.valueTypes` 可注册自定义类型。
 
+### 值 codec 与传输值
+
+codec 显式区分表格中的业务值与 JSON-safe 传输值：
+
+```ts
+const definition = defineGrid<Order>({
+  // ...
+  valueTypes: {
+    instant: {
+      codec: {
+        encode: (value) => {
+          if (!(value instanceof Date)) throw new Error('Expected Date');
+          return value.toISOString();
+        },
+        decode: (value) => {
+          if (typeof value !== 'string') throw new Error('Expected ISO date string');
+          return new Date(value);
+        },
+      },
+    },
+  },
+  fields: [
+    {
+      id: 'approvedAt',
+      title: '审批时间',
+      valueType: 'instant',
+      edit: true,
+    },
+  ],
+});
+```
+
+解析后的字段公开 `field.codec`、`field.encodeValue(value)` 和 `field.decodeValue(json)`。`transport.encodeValue` 可以按字段覆盖 codec 的 `encode`，例如实体对象只上传 id。编码结果必须是 `GridJsonValue | undefined`；函数、`Date`、`Map`、`NaN`、`Infinity` 和循环引用都不是合法线上值。
+
+Core 不会自动遍历数据源返回的每行并解码；后端响应/表单 adapter 应在组装 row 时调用 `decodeValue`。编辑保存时 Core 会自动调用 `encodeValue`，并把业务值和编码值同时交给 `editing.save`。
+
 ## 静态和动态选项
 
 静态选项：
@@ -115,11 +151,16 @@ Remote source 只发送筛选协议，通常由后端按 `transport.filterKey` �
 服务端下发的 `GridSchema` 必须保持 JSON-safe。函数和 React 节点通过稳定名称绑定：
 
 ```ts
+const schema = parseGridSchema(await api.grids.getSchema());
 const definition = bindGridSchema(schema, {
   renderers: { ownerCell: ({ value }) => <Owner value={value} /> },
   optionLoaders: { users: loadUserOptions },
   actionHandlers: { exportOrders },
 }, 'id');
 ```
+
+`parseGridSchema(input: unknown)` 是不可信 JSON 进入运行时前的边界：它校验协议版本、普通对象、JSON-safe 数据、唯一 id、引用完整性与字段/列/动作限制。`bindGridSchema` 也会再次调用它，但在 API adapter 边界显式解析能更早返回协议错误。服务端不能下发或注入函数；`runtime` 中的 renderer、loader 和 handler 只能来自受信任的应用代码。
+
+不可信的静态选项、facet 或自定义 options adapter 应通过 `normalizeGridOptions(input)`：它要求数组、普通选项对象、非空 label、唯一的 string/number/boolean value，并校验 color、disabled 和 meta 的形状。不要用类型断言绕过这两个运行时边界。
 
 缺失 renderer、editor、loader、header 或 action handler 时会在绑定阶段立即抛错。

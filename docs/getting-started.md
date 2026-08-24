@@ -2,14 +2,16 @@
 
 ## 环境要求
 
-- Node.js 18+
-- React 18+
-- Ant Design 6
-- TypeScript 5 推荐但不是运行时必需
+- Node.js `>=20.19.0 <27`
+- React 与 React DOM 18/19，两者主版本一致
+- Ant Design 与 Ant Design Icons 6
+- TypeScript 5.4–7.x 推荐但不是运行时必需
 
 ```bash
-pnpm add @huiyun/data-grid antd @ant-design/icons
+pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons
 ```
+
+React、React DOM、Ant Design 和图标包都是 optional peer dependencies；使用默认 DataGrid 时需要由应用显式安装，从而避免包替业务项目决定 UI 版本。只用 `@huiyun/data-grid/core` 时可以只安装 `@huiyun/data-grid`，不需要任何 UI peer。
 
 在应用入口导入一次样式：
 
@@ -127,12 +129,15 @@ export function OrderList() {
     <DataGrid
       definition={orderGrid}
       source={source}
+      temporal={{ timeZone: 'Asia/Shanghai', weekStartsOn: 1 }}
       pageSizeOptions={[20, 50, 100]}
       onError={(error) => notification.error({ message: error.message })}
     />
   );
 }
 ```
+
+`temporal` 是 Local 数据源相对日期操作符（如 `today`、`thisWeek`）的时间语义。`timeZone` 使用 IANA 时区，默认 `UTC`；`weekStartsOn` 使用 0（周日）到 6（周六），默认 1（周一）。可在测试或可重放业务中传入 `now: () => fixedDate`；生产实时时钟应每次返回当前时间。Remote/Controlled 后端仍需定义并实现同样的时区与周起始协议。
 
 默认配方已经包含视图、字段设置、筛选、排序、搜索、工具栏动作、表格、汇总、总数和分页。
 

@@ -13,11 +13,17 @@ import { useControllableOpen } from './hooks';
 import { resolveGridLocale } from './locale';
 import { gridNodeText, renderGridNode } from './render';
 
-function leafColumns<Row extends object>(
+interface LeafColumnEntry<Row extends object> {
+  column: GridResolvedColumn<Row>;
+  parent?: GridResolvedColumn<Row>;
+}
+
+function leafColumnEntries<Row extends object>(
   columns: readonly GridResolvedColumn<Row>[],
-): GridResolvedColumn<Row>[] {
+  parent?: GridResolvedColumn<Row>,
+): LeafColumnEntry<Row>[] {
   return columns.flatMap((column) =>
-    column.children?.length ? leafColumns(column.children) : [column],
+    column.children?.length ? leafColumnEntries(column.children, column) : [{ column, parent }],
   );
 }
 
@@ -39,9 +45,14 @@ export function GridColumnPanel<Row extends object>({
   const state = controlled ?? current;
   const readOnly = controlled !== undefined && !onChange;
   const [search, setSearch] = useState('');
-  const columns = useMemo(
-    () => leafColumns(supplied || instance.definition.columns),
+  const entries = useMemo(
+    () => leafColumnEntries(supplied || instance.definition.columns),
     [instance, supplied],
+  );
+  const columns = useMemo(() => entries.map((entry) => entry.column), [entries]);
+  const entryMap = useMemo(
+    () => new Map(entries.map((entry) => [entry.column.id, entry])),
+    [entries],
   );
   const order = useMemo(
     () => [
@@ -74,10 +85,17 @@ export function GridColumnPanel<Row extends object>({
     onChange?.({ ...state, pinned: { ...state.pinned, [columnId]: pinned } });
   };
   const move = (columnId: string, direction: -1 | 1) => {
+    const entry = entryMap.get(columnId);
+    if (!entry || entry.column.reorderable === false) return;
+    const siblings = order.filter((id) => entryMap.get(id)?.parent === entry.parent);
+    const siblingIndex = siblings.indexOf(columnId);
+    const targetId = siblings[siblingIndex + direction];
+    const targetEntry = targetId ? entryMap.get(targetId) : undefined;
+    if (!targetId || targetEntry?.column.reorderable === false) return;
     const nextOrder = [...order];
     const index = nextOrder.indexOf(columnId);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= nextOrder.length) return;
+    const target = nextOrder.indexOf(targetId);
+    if (index < 0 || target < 0) return;
     [nextOrder[index], nextOrder[target]] = [nextOrder[target]!, nextOrder[index]!];
     if (readOnly) return;
     if (controlled === undefined && !onChange) instance.columns.setOrder(nextOrder);
@@ -113,7 +131,13 @@ export function GridColumnPanel<Row extends object>({
           );
           const hidden = state.hidden.includes(column.id);
           const pinned = state.pinned[column.id] ?? null;
-          const position = order.indexOf(column.id);
+          const entry = entryMap.get(column.id);
+          const siblings = entry
+            ? order.filter((id) => entryMap.get(id)?.parent === entry.parent)
+            : [];
+          const position = siblings.indexOf(column.id);
+          const previousColumn = entryMap.get(siblings[position - 1] || '')?.column;
+          const nextColumn = entryMap.get(siblings[position + 1] || '')?.column;
           const title = gridNodeText(column.title) || column.id;
           return (
             <div className="hui-grid__column-item" key={column.id}>
@@ -150,7 +174,12 @@ export function GridColumnPanel<Row extends object>({
                 <Button
                   size="small"
                   type="text"
-                  disabled={!managed || position <= 0 || column.reorderable === false}
+                  disabled={
+                    !managed ||
+                    position <= 0 ||
+                    column.reorderable === false ||
+                    previousColumn?.reorderable === false
+                  }
                   aria-label={locale.moveUp}
                   icon={<ArrowUpOutlined />}
                   onClick={() => move(column.id, -1)}
@@ -159,7 +188,10 @@ export function GridColumnPanel<Row extends object>({
                   size="small"
                   type="text"
                   disabled={
-                    !managed || position >= order.length - 1 || column.reorderable === false
+                    !managed ||
+                    position >= siblings.length - 1 ||
+                    column.reorderable === false ||
+                    nextColumn?.reorderable === false
                   }
                   aria-label={locale.moveDown}
                   icon={<ArrowDownOutlined />}

@@ -1,26 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
 import { useGridInstance, useGridSelector } from '../react';
-import type { GridFilterGroup, GridOption, GridResolvedField } from '../core';
-import { gridNodeText } from './render';
+import {
+  stableStringify,
+  type GridFilterGroup,
+  type GridOption,
+  type GridResolvedField,
+} from '../core';
+import { gridNodeText, safeGridText } from './render';
 
 function dependentFilterSignature(group: GridFilterGroup, fieldIds: readonly string[]): string {
   const fields = new Set(fieldIds);
-  const values: unknown[] = [];
-  const visit = (current: GridFilterGroup) => {
-    current.children.forEach((node) => {
-      if (node.type === 'group') visit(node);
-      else if (fields.has(node.fieldId)) values.push([node.fieldId, node.operator, node.value]);
+  const project = (current: GridFilterGroup): unknown => {
+    const children = current.children.flatMap((node) => {
+      if (node.type === 'condition') {
+        return fields.has(node.fieldId)
+          ? [[node.fieldId, node.operator, node.value] as unknown]
+          : [];
+      }
+      const nested = project(node) as { children: unknown[] } | undefined;
+      return nested?.children.length ? [nested] : [];
     });
+    return children.length
+      ? { logic: current.logic, negated: Boolean(current.negated), children }
+      : undefined;
   };
-  visit(group);
-  return JSON.stringify(values);
+  return stableStringify(project(group));
 }
 
 function filterStaticOptions(options: GridOption[], search: string): GridOption[] {
   const normalized = search.trim().toLocaleLowerCase();
   if (!normalized) return options;
   return options.filter((option) =>
-    `${gridNodeText(option.label)} ${String(option.value)}`
+    `${gridNodeText(option.label)} ${safeGridText(option.value)}`
       .toLocaleLowerCase()
       .includes(normalized),
   );
@@ -103,7 +114,10 @@ export function useGridOptions<Row extends object>(
           })
           .catch((reason) => {
             if (requestRef.current !== requestId || controller.signal.aborted) return;
-            const error = reason instanceof Error ? reason : new Error(String(reason));
+            const error =
+              reason instanceof Error
+                ? reason
+                : new Error(safeGridText(reason, 'Unable to load options'));
             setState({ options: [], loading: false, error });
           });
       },

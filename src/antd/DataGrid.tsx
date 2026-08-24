@@ -1,5 +1,6 @@
 import { App as AntApp, ConfigProvider, Space } from 'antd';
-import { useEffect, useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo } from 'react';
+import type { GridInstance, GridOptions } from '../core';
 import { GridProvider, useGrid, useGridSelector } from '../react';
 import { useGridInstance } from '../react';
 import { GridActions, GridSelectionBar } from './actions';
@@ -22,6 +23,8 @@ import {
 } from './layout';
 import { GridSortTrigger } from './sort';
 import { GridTable } from './table';
+import { resolveGridLocale } from './locale';
+import { GridRenderErrorBoundary } from './render';
 import type { DataGridProps, GridFooterFeatures, GridToolbarFeatures, GridUiConfig } from './types';
 import { GridViewTrigger } from './views';
 
@@ -86,6 +89,19 @@ export function GridDefaultToolbar<Row extends object>({
     ...input,
     views: input?.views ?? instance.definition.defaults?.views ?? true,
     search: (input?.search ?? defaultToolbar.search) && instance.capabilities.search,
+    filters:
+      (input?.filters ?? defaultToolbar.filters) &&
+      instance.capabilities.filter.maxConditions > 0 &&
+      instance.definition.fields.some((field) => {
+        if (!field.filter) return false;
+        const operators = field.filter.operators || ['equals'];
+        const sourceOperators = instance.capabilities.filter.operators;
+        return !sourceOperators || operators.some((operator) => sourceOperators.includes(operator));
+      }),
+    sorts:
+      (input?.sorts ?? defaultToolbar.sorts) &&
+      instance.capabilities.sort.max > 0 &&
+      instance.definition.fields.some((field) => Boolean(field.sort)),
   };
   return (
     <GridToolbar
@@ -132,8 +148,40 @@ export function GridDefaultFooter<Row extends object>({
   );
 }
 
+function DataGridContent<Row extends object>({
+  props,
+  instance,
+}: {
+  props: DataGridProps<Row>;
+  instance: GridInstance<Row>;
+}) {
+  if (typeof props.children === 'function') return props.children(instance);
+  if (props.children) return props.children;
+  return (
+    <GridShell className={props.className} style={props.style}>
+      {props.toolbar !== false && <GridDefaultToolbar<Row> features={props.toolbar} />}
+      <GridActiveFilters<Row> />
+      {props.beforeTable}
+      <GridStatus<Row> />
+      <GridTable<Row> rowActions={props.rowActions} />
+      {props.afterTable}
+      {props.footer !== false && <GridDefaultFooter<Row> features={props.footer} />}
+    </GridShell>
+  );
+}
+
 export function DataGrid<Row extends object>(props: DataGridProps<Row>) {
-  const instance = useGrid<Row>(props);
+  const gridOptions: GridOptions<Row> = {
+    ...props,
+    temporal:
+      props.temporal || props.timeZone
+        ? {
+            ...props.temporal,
+            timeZone: props.temporal?.timeZone ?? props.timeZone,
+          }
+        : undefined,
+  };
+  const instance = useGrid<Row>(gridOptions);
   const ui = useMemo<GridUiConfig<Row>>(
     () => ({
       locale: props.locale,
@@ -174,28 +222,24 @@ export function DataGrid<Row extends object>(props: DataGridProps<Row>) {
     return instance.subscribeEvent((event) => props.onEvent?.(event, instance.getState()));
   }, [instance, props.onEvent]);
 
-  const content: ReactNode =
-    typeof props.children === 'function' ? (
-      props.children(instance)
-    ) : props.children ? (
-      props.children
-    ) : (
-      <GridShell className={props.className} style={props.style}>
-        {props.toolbar !== false && <GridDefaultToolbar<Row> features={props.toolbar} />}
-        <GridActiveFilters<Row> />
-        {props.beforeTable}
-        <GridStatus<Row> />
-        <GridTable<Row> rowActions={props.rowActions} />
-        {props.afterTable}
-        {props.footer !== false && <GridDefaultFooter<Row> features={props.footer} />}
-      </GridShell>
-    );
+  const locale = resolveGridLocale(props.locale, props.language);
 
   return (
     <GridProvider value={instance}>
       <GridUiProvider value={ui}>
         <ConfigProvider theme={props.theme} locale={props.antdLocale}>
-          <AntApp component={false}>{content}</AntApp>
+          <AntApp component="div" className="hui-grid__antd-app">
+            <GridRenderErrorBoundary
+              resetKey={props.children || props.definition}
+              fallback={
+                <div className="hui-grid hui-grid__error" role="alert">
+                  {locale.renderFailed}
+                </div>
+              }
+            >
+              <DataGridContent props={props} instance={instance} />
+            </GridRenderErrorBoundary>
+          </AntApp>
         </ConfigProvider>
       </GridUiProvider>
     </GridProvider>

@@ -8,6 +8,7 @@ export {
   defineGridSchema,
   definitionSignature,
   isResolvedGridDefinition,
+  parseGridSchema,
   resolveGridDefinition,
 } from './definition';
 
@@ -48,10 +49,11 @@ export {
   matchesGridFilters,
   normalizeFilterValue,
   serializeGridQuery,
+  validateGridTemporalContext,
   validateGridQuery,
 } from './query';
 
-export { createLocalGridPersistence } from './persistence';
+export { createLocalGridPersistence, parseGridPersistedState } from './persistence';
 export type { LocalGridPersistenceOptions } from './persistence';
 
 export {
@@ -59,6 +61,7 @@ export {
   createLocalSource,
   createRemoteSource,
   normalizeGridResult,
+  normalizeGridOptions,
   resolveGridCapabilities,
 } from './source';
 

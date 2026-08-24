@@ -1,4 +1,11 @@
-import { Fragment, isValidElement, type ReactNode, type ReactPortal } from 'react';
+import {
+  Component,
+  Fragment,
+  isValidElement,
+  type ErrorInfo,
+  type ReactNode,
+  type ReactPortal,
+} from 'react';
 
 function isReactPortal(value: unknown): value is ReactPortal {
   return Boolean(
@@ -21,6 +28,16 @@ function stringifyGridNode(value: object): string {
     return String(value);
   } catch {
     return '[Unrenderable value]';
+  }
+}
+
+export function safeGridText(value: unknown, fallback = ''): string {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return stringifyGridNode(value);
+  try {
+    return String(value);
+  } catch {
+    return fallback;
   }
 }
 
@@ -47,4 +64,49 @@ export function gridNodeText(value: unknown): string {
   if (isValidElement(value) || isReactPortal(value)) return '';
   if (Array.isArray(value)) return value.map(gridNodeText).filter(Boolean).join(' ');
   return stringifyGridNode(value as object);
+}
+
+export interface GridRenderErrorBoundaryProps {
+  children: ReactNode;
+  resetKey?: unknown;
+  fallback: ReactNode | ((error: Error) => ReactNode);
+  onError?: (error: Error, info: ErrorInfo) => void;
+}
+
+interface GridRenderErrorBoundaryState {
+  error?: Error;
+}
+
+/** Isolates client-side renderer failures. React does not support error boundaries during SSR. */
+export class GridRenderErrorBoundary extends Component<
+  GridRenderErrorBoundaryProps,
+  GridRenderErrorBoundaryState
+> {
+  state: GridRenderErrorBoundaryState = {};
+
+  static getDerivedStateFromError(error: unknown): GridRenderErrorBoundaryState {
+    return {
+      error: error instanceof Error ? error : new Error(safeGridText(error, 'Render failed')),
+    };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    this.props.onError?.(error, info);
+  }
+
+  componentDidUpdate(previous: GridRenderErrorBoundaryProps) {
+    if (this.state.error && previous.resetKey !== this.props.resetKey) {
+      this.setState({ error: undefined });
+    }
+  }
+
+  render() {
+    const { error } = this.state;
+    if (error) {
+      return typeof this.props.fallback === 'function'
+        ? this.props.fallback(error)
+        : this.props.fallback;
+    }
+    return this.props.children;
+  }
 }

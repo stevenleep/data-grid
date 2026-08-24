@@ -3,6 +3,7 @@ import type { TableProps, ThemeConfig } from 'antd';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import type {
   GridEvent,
+  GridFilterOperator,
   GridInstance,
   GridOptions,
   GridResolvedColumn,
@@ -94,6 +95,16 @@ export interface GridLocale {
   moveUp: string;
   moveDown: string;
   editCell: (title: string) => string;
+  operatorLabel: (operator: GridFilterOperator) => string;
+  not: string;
+  minimum: string;
+  maximum: string;
+  yes: string;
+  no: string;
+  trueLabel: string;
+  falseLabel: string;
+  invalidJson: string;
+  renderFailed: string;
 }
 
 export interface GridToolbarFeatures {

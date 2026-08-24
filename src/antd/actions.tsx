@@ -13,27 +13,82 @@ import type {
   GridAction,
   GridActionContext,
   GridActionPlacement,
+  GridInstance,
   GridResolvedField,
+  GridRowKey,
 } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { resolveGridLocale } from './locale';
 import { gridNodeText, renderGridNode } from './render';
 
-function actionStateEqual(
+const rowIndexes = new WeakMap<readonly object[], Map<GridRowKey, object>>();
+const selectedRowIndexes = new WeakMap<
+  object,
+  { selection: unknown; rows: unknown; value: readonly object[] }
+>();
+
+function currentRowFrom<Row extends object>(
+  rows: readonly Row[],
+  key: GridRowKey | undefined,
+  getRowKey: (row: Row) => GridRowKey,
+): Row | undefined {
+  if (key === undefined) return undefined;
+  let index = rowIndexes.get(rows) as Map<GridRowKey, Row> | undefined;
+  if (!index) {
+    index = new Map(rows.map((item) => [getRowKey(item), item]));
+    rowIndexes.set(rows, index as Map<GridRowKey, object>);
+  }
+  return index.get(key);
+}
+
+function selectedRowsFrom<Row extends object>(
+  instance: GridInstance<Row>,
+  selection: unknown,
+  rows: readonly Row[],
+): readonly Row[] {
+  const cached = selectedRowIndexes.get(instance);
+  if (cached && cached.selection === selection && cached.rows === rows)
+    return cached.value as readonly Row[];
+  const resolved = instance.selection.getSelectedRows();
+  let value: readonly object[] = resolved;
+  if (cached) {
+    const previous = cached.value;
+    if (
+      previous.length === resolved.length &&
+      previous.every((item, index) => item === resolved[index])
+    ) {
+      value = previous;
+    }
+  }
+  selectedRowIndexes.set(instance, { selection, rows, value });
+  return value as readonly Row[];
+}
+
+function booleanRecordEqual(left: Record<string, boolean>, right: Record<string, boolean>) {
+  const leftKeys = Object.keys(left);
+  return (
+    leftKeys.length === Object.keys(right).length &&
+    leftKeys.every((key) => left[key] === right[key])
+  );
+}
+
+function actionStateEqual<Row extends object>(
   left: {
     loading: boolean;
     error?: string;
     query: unknown;
     selection: unknown;
-    rows: unknown;
+    selectedRows: unknown;
+    row?: Row;
   },
   right: {
     loading: boolean;
     error?: string;
     query: unknown;
     selection: unknown;
-    rows: unknown;
+    selectedRows: unknown;
+    row?: Row;
   },
 ) {
   return (
@@ -41,7 +96,8 @@ function actionStateEqual(
     left.error === right.error &&
     left.query === right.query &&
     left.selection === right.selection &&
-    left.rows === right.rows
+    left.selectedRows === right.selectedRows &&
+    left.row === right.row
   );
 }
 
@@ -72,6 +128,7 @@ export function GridActionButton<Row extends object>({
 }: GridActionButtonProps<Row>) {
   const instance = useGridInstance<Row>();
   const key = instance.actions.key(action.id, row);
+  const rowKey = row ? instance.definition.getRowKey(row) : undefined;
   const state = useGridSelector<
     Row,
     {
@@ -79,7 +136,8 @@ export function GridActionButton<Row extends object>({
       error?: string;
       query: unknown;
       selection: unknown;
-      rows: readonly Row[];
+      selectedRows: readonly Row[];
+      row?: Row;
     }
   >(
     (current) => ({
@@ -87,16 +145,12 @@ export function GridActionButton<Row extends object>({
       error: current.actions.errors[key],
       query: current.query,
       selection: current.selection,
-      rows: current.data.rows,
+      selectedRows: selectedRowsFrom(instance, current.selection, current.data.rows),
+      row: currentRowFrom(current.data.rows, rowKey, instance.definition.getRowKey),
     }),
     actionStateEqual,
   );
-  const currentRow = row
-    ? state.rows.find(
-        (candidate) =>
-          instance.definition.getRowKey(candidate) === instance.definition.getRowKey(row),
-      ) || row
-    : undefined;
+  const currentRow = state.row || row;
   const context = instance.actions.getContext(currentRow, field, value);
   const visible =
     typeof action.visible === 'function' ? action.visible(context) : action.visible !== false;
@@ -185,26 +239,50 @@ export function GridActions<Row extends object>({
   const { modal } = AntApp.useApp();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
-  useGridSelector<Row, ReturnType<typeof instance.getState>['query']>((state) => state.query);
-  useGridSelector<Row, ReturnType<typeof instance.getState>['selection']>(
-    (state) => state.selection,
+  const rowKey = row ? instance.definition.getRowKey(row) : undefined;
+  const state = useGridSelector<
+    Row,
+    {
+      query: ReturnType<typeof instance.getState>['query'];
+      selection: ReturnType<typeof instance.getState>['selection'];
+      selectedRows: readonly Row[];
+      row?: Row;
+    }
+  >(
+    (current) => ({
+      query: current.query,
+      selection: current.selection,
+      selectedRows: selectedRowsFrom(instance, current.selection, current.data.rows),
+      row: currentRowFrom(current.data.rows, rowKey, instance.definition.getRowKey),
+    }),
+    (left, right) =>
+      left.query === right.query &&
+      left.selection === right.selection &&
+      left.selectedRows === right.selectedRows &&
+      left.row === right.row,
   );
-  const rows = useGridSelector<Row, readonly Row[]>((state) => state.data.rows);
-  const actionState = useGridSelector<Row, ReturnType<typeof instance.getState>['actions']>(
-    (state) => state.actions,
-  );
-  const currentRow = row
-    ? rows.find(
-        (candidate) =>
-          instance.definition.getRowKey(candidate) === instance.definition.getRowKey(row),
-      ) || row
-    : undefined;
+  const currentRow = state.row || row;
   const baseContext = instance.actions.getContext(currentRow, field, value);
-  const resolved = (actions || instance.actions.list(placement, currentRow)).filter((action) =>
+  const candidates = actions
+    ? [...actions]
+    : (instance.definition.actions || [])
+        .filter((action) => (action.placement || 'toolbar') === placement)
+        .sort((left, right) => (left.order || 0) - (right.order || 0));
+  const resolved = candidates.filter((action) =>
     typeof action.visible === 'function' ? action.visible(baseContext) : action.visible !== false,
   );
   const visible = resolved.slice(0, maxVisible);
   const overflow = resolved.slice(maxVisible);
+  const pending = useGridSelector<Row, Record<string, boolean>>(
+    (current) =>
+      Object.fromEntries(
+        overflow.map((action) => [
+          action.id,
+          Boolean(current.actions.pending[instance.actions.key(action.id, currentRow)]),
+        ]),
+      ),
+    booleanRecordEqual,
+  );
 
   const items = useMemo(
     () =>
@@ -212,7 +290,7 @@ export function GridActions<Row extends object>({
         const disabled =
           Boolean(
             typeof action.disabled === 'function' ? action.disabled(baseContext) : action.disabled,
-          ) || Boolean(actionState.pending[instance.actions.key(action.id, currentRow)]);
+          ) || Boolean(pending[action.id]);
         return {
           key: action.id,
           label: renderGridNode(action.label),
@@ -237,7 +315,7 @@ export function GridActions<Row extends object>({
           },
         };
       }),
-    [actionState.pending, baseContext, currentRow, field, instance, modal, overflow, value],
+    [baseContext, currentRow, field, instance, modal, overflow, pending, value],
   );
   if (!resolved.length) return null;
   return (

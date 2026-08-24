@@ -112,13 +112,14 @@ fields: [
 editing: {
   optimistic: true,
   apply: (row, field, value) => ({ ...row, [field.id]: value }),
-  save: async ({ rowKey, field, value, signal }) => {
-    return api.orders.patch(rowKey, { [field.id]: value }, signal);
+  save: async ({ rowKey, field, value, encodedValue, signal }) => {
+    // value 是已 normalize 的业务值；encodedValue 是字段 codec/transport 生成的线上值。
+    return api.orders.patch(rowKey, { [field.id]: encodedValue }, signal);
   },
 }
 ```
 
-双击可编辑单元格或聚焦后按 Enter 开始编辑。失败、取消或卸载时乐观值会回滚。
+双击可编辑单元格或聚焦后按 Enter 开始编辑。`encodedValue` 可为 `undefined`，业务 adapter 应按 API 的空值语义决定省略字段还是显式清空。非 JSON-safe 编码会在调用 `save` 之前被拒绝。失败、取消或卸载时乐观值会回滚。
 
 ## 权限与可见性
 

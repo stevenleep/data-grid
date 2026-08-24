@@ -41,6 +41,8 @@ export type {
 } from './layout';
 export { enUS, resolveGridLocale, zhCN } from './locale';
 export { noValueOperators, operatorLabel } from './operators';
+export { GridRenderErrorBoundary, gridNodeText, renderGridNode, safeGridText } from './render';
+export type { GridRenderErrorBoundaryProps } from './render';
 export { GridSortBuilder, GridSortPanel, GridSortTrigger } from './sort';
 export type { GridSortBuilderProps, GridSortPanelProps, GridSortTriggerProps } from './sort';
 export { GridTable } from './table';

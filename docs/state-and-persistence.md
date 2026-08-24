@@ -88,7 +88,8 @@ readonly 视图不可保存或删除；对当前视图修改 query/columns 后 `
 ```tsx
 <DataGrid
   persistence={createLocalGridPersistence({
-    scope: currentUser.id,
+    scope: `${tenantId}:${currentUser.id}`,
+    identity: `${tenantId}:${currentUser.id}:local-preferences`,
     storage: window.localStorage,
   })}
 />
@@ -102,12 +103,22 @@ readonly 视图不可保存或删除；对当前视图修改 query/columns 后 `
 
 ```ts
 const persistence: GridPersistence<Order> = {
-  load: (gridId) => api.gridPreferences.get(gridId),
+  identity: `${tenantId}:${currentUser.id}:server-preferences`,
+  load: async (gridId) => {
+    const input: unknown = await api.gridPreferences.get(gridId);
+    return input == null ? null : parseGridPersistedState(input);
+  },
   save: (gridId, state) => api.gridPreferences.put(gridId, state),
   clear: (gridId) => api.gridPreferences.remove(gridId),
   migrate: (state, { definition }) => migratePreference(state, definition.revision),
 };
 ```
+
+`persistence.identity` 表示当前账户/租户/存储会话，而不是 adapter 对象的瞬时引用。同一会话重建 adapter 时保持它稳定；切换账户、租户或存储后立即更换它。身份变化会先处理上一会话的待保存状态，并启动新会话的恢复；迟到的旧 `load` 不会覆盖新账户。`createLocalGridPersistence` 会由 prefix/scope/storage 生成默认 identity，服务端 adapter 应显式声明。
+
+identity 只用于客户端会话隔离，不代表身份认证。服务端 `load/save/clear` 仍必须从已验证的请求上下文确定用户和租户，不应信任客户端传入的 identity。
+
+`parseGridPersistedState(input: unknown)` 是自定义/远端 adapter 的不可信返回值边界：它校验 `huiyun.data-grid/preferences/v1`、grid/revision、列状态、视图、查询 JSON 形状、唯一 id 与 ISO 时间。解析成功不代表用户有权读取该偏好；adapter 仍需验证归属，Core 仍会按当前 `gridId`/revision 决定恢复或迁移。本地 adapter 已在内部使用同一解析器。
 
 持久化协议包含 grid id、revision、列状态、命名视图、active view 和更新时间。revision 不匹配时，只有提供 `migrate` 才会恢复。
 

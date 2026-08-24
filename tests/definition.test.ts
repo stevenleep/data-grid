@@ -5,6 +5,7 @@ import {
   defineGrid,
   defineGridRuntime,
   defineGridSchema,
+  parseGridSchema,
   resolveGridDefinition,
 } from '../src/core';
 
@@ -154,5 +155,85 @@ describe('grid definition', () => {
     const bound = bindGridSchema<OrderRow>(schema, {}, (row) => row.id);
     expect(bound.projection).toEqual(schema.projection);
     expect(resolveGridDefinition(bound).projection).toEqual(schema.projection);
+  });
+
+  it('parses untrusted schemas before binding runtime callbacks', () => {
+    expect(() =>
+      parseGridSchema({
+        protocol: 'huiyun.data-grid/v1',
+        id: 'unsafe-schema',
+        revision: 1,
+        fields: [
+          {
+            id: 'status',
+            title: 'Status',
+            filter: { operators: ['equals'], defaultOperator: 'contains' },
+          },
+        ],
+      }),
+    ).toThrow('defaultOperator');
+
+    expect(() =>
+      parseGridSchema({
+        protocol: 'huiyun.data-grid/v1',
+        id: 'unsafe-projection',
+        revision: 1,
+        fields: [{ id: 'name', title: 'Name' }],
+        projection: { requiredFields: ['missing'] },
+      }),
+    ).toThrow('unknown field');
+
+    expect(() =>
+      parseGridSchema({
+        protocol: 'huiyun.data-grid/v1',
+        id: 'unsafe-options',
+        revision: 1,
+        fields: [
+          {
+            id: 'status',
+            title: 'Status',
+            options: { type: 'static', items: [{ label: 'None', value: null }] },
+          },
+        ],
+      }),
+    ).toThrow('invalid value');
+  });
+
+  it('exposes field codecs and validates forged resolved definitions', () => {
+    const definition = resolveGridDefinition<OrderRow>({
+      id: 'codec-definition',
+      rowKey: 'id',
+      valueTypes: {
+        cents: {
+          codec: {
+            encode: (value) => Number(value),
+            decode: (value) => Number(value),
+          },
+        },
+      },
+      fields: [{ id: 'amountInCents', title: 'Amount', valueType: 'cents', edit: true }],
+    });
+    const field = definition.fieldMap.get('amountInCents')!;
+    expect(field.encodeValue(1234)).toBe(1234);
+    expect(field.decodeValue(4321)).toBe(4321);
+
+    const forged = {
+      ...definition,
+      fieldMap: new Map(),
+    };
+    expect(() => resolveGridDefinition(forged)).toThrow('fieldMap');
+
+    const builtins = resolveGridDefinition<{ id: string; happenedAt: Date; score: number }>({
+      id: 'builtin-codecs',
+      rowKey: 'id',
+      fields: [
+        { id: 'happenedAt', title: 'When', valueType: 'dateTime' },
+        { id: 'score', title: 'Score', valueType: 'number' },
+      ],
+    });
+    expect(
+      builtins.fieldMap.get('happenedAt')?.encodeValue(new Date('2026-08-24T00:00:00.000Z')),
+    ).toBe('2026-08-24T00:00:00.000Z');
+    expect(() => builtins.fieldMap.get('score')?.encodeValue(Number.NaN)).toThrow('non-finite');
   });
 });

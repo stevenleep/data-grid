@@ -1,5 +1,6 @@
 export type GridPrimitive = string | number | boolean | null;
 export type GridJsonValue = GridPrimitive | GridJsonValue[] | { [key: string]: GridJsonValue };
+export type GridOptionValue = Exclude<GridPrimitive, null>;
 export type GridPath = readonly (string | number)[];
 export type GridRowKey = string | number;
 export type GridNode = unknown;
@@ -71,7 +72,7 @@ export type GridFilterOperatorValueKinds = Partial<Record<GridFilterOperator, Gr
 
 export interface GridOption<Label = GridNode> {
   label: Label;
-  value: GridPrimitive;
+  value: GridOptionValue;
   color?: string;
   disabled?: boolean;
   description?: Label;
@@ -80,7 +81,7 @@ export interface GridOption<Label = GridNode> {
 
 export interface GridOptionSchema {
   label: string;
-  value: GridPrimitive;
+  value: GridOptionValue;
   color?: string;
   disabled?: boolean;
   description?: string;
@@ -228,6 +229,8 @@ export interface GridValueTypeDefinition<Row extends object = object, Value = un
   codec?: GridValueCodec<Value>;
   normalize?: (value: unknown, row: Row) => Value;
   equals?: (left: Value, right: Value) => boolean;
+  /** Resolves an option/entity identity without imposing a business object shape. */
+  getIdentity?: (value: Value) => GridOptionValue | undefined;
   isEmpty?: (value: Value) => boolean;
   compare?: (left: Value, right: Value, leftRow: Row, rightRow: Row) => number;
   searchText?: (value: Value, row: Row) => string;
@@ -321,6 +324,8 @@ export interface GridFieldDefinition<Row extends object, Value = unknown> {
   options?: GridFieldOptions<Row>;
   description?: GridNode;
   column?: false | GridColumnDisplay;
+  equals?: GridValueTypeDefinition<Row, Value>['equals'];
+  getIdentity?: GridValueTypeDefinition<Row, Value>['getIdentity'];
   compare?: GridValueTypeDefinition<Row, Value>['compare'];
   searchText?: GridValueTypeDefinition<Row, Value>['searchText'];
   filterPredicate?: GridValueTypeDefinition<Row, Value>['filterPredicate'];
@@ -358,9 +363,13 @@ export interface GridResolvedField<Row extends object, Value = unknown> {
   edit: false | (Required<Pick<GridFieldEdit, 'enabled'>> & GridFieldEdit);
   options?: GridFieldOptions<Row>;
   description?: GridNode;
+  codec: GridValueCodec<Value>;
   getValue: (row: Row) => Value;
   normalize: (value: unknown, row: Row) => Value;
+  encodeValue: (value: Value) => GridJsonValue | undefined;
+  decodeValue: (value: GridJsonValue | undefined) => Value;
   equals: (left: Value, right: Value) => boolean;
+  getIdentity?: GridValueTypeDefinition<Row, Value>['getIdentity'];
   isEmpty: (value: Value) => boolean;
   compare?: GridValueTypeDefinition<Row, Value>['compare'];
   searchText?: GridValueTypeDefinition<Row, Value>['searchText'];
@@ -447,6 +456,8 @@ export interface GridFieldRuntime<Row extends object, Value = unknown> {
   normalize?: (value: unknown, row: Row) => Value;
   transport?: Pick<GridFieldTransport<Value>, 'encodeFilter' | 'encodeValue'>;
   options?: GridFieldOptions<Row>;
+  equals?: GridFieldDefinition<Row, Value>['equals'];
+  getIdentity?: GridFieldDefinition<Row, Value>['getIdentity'];
   compare?: GridFieldDefinition<Row, Value>['compare'];
   searchText?: GridFieldDefinition<Row, Value>['searchText'];
   filterPredicate?: GridFieldDefinition<Row, Value>['filterPredicate'];
@@ -515,6 +526,8 @@ export interface GridEditInput<Row extends object> {
   field: GridResolvedField<Row>;
   previousValue: unknown;
   value: unknown;
+  /** JSON-safe value produced by field transport/value-type encoding. */
+  encodedValue?: GridJsonValue;
   signal: AbortSignal;
   instance: GridInstance<Row>;
 }
@@ -538,6 +551,15 @@ export interface GridFeatureDefaults {
   density?: GridDensity;
   selection?: boolean;
   views?: boolean;
+}
+
+export interface GridTemporalContext {
+  /** IANA timezone used by local relative-date operators. */
+  timeZone?: string;
+  /** Week start where 0 is Sunday and 6 is Saturday. Defaults to Monday. */
+  weekStartsOn?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  /** Injectable clock for deterministic applications and tests. */
+  now?: () => Date;
 }
 
 export interface GridProjectionDefinition {
@@ -667,6 +689,8 @@ export interface GridReadInput<Row extends object> {
 
 export interface GridRemoteSource<Row extends object> {
   mode: 'remote';
+  /** Stable logical dataset/tenant identity used to isolate requests and caches. */
+  datasetKey?: string;
   read: (input: GridReadInput<Row>) => Promise<GridReadResult<Row>>;
   capabilities?: GridCapabilities;
   policy?: {
@@ -679,12 +703,14 @@ export interface GridRemoteSource<Row extends object> {
 
 export interface GridLocalSource<Row extends object> {
   mode: 'local';
+  datasetKey?: string;
   rows: readonly Row[];
   capabilities?: GridCapabilities;
 }
 
 export interface GridControlledSource<Row extends object> {
   mode: 'controlled';
+  datasetKey?: string;
   result: GridReadResult<Row>;
   loading?: boolean;
   refreshing?: boolean;
@@ -798,6 +824,8 @@ export interface GridPersistenceContext<Row extends object> {
 }
 
 export interface GridPersistence<Row extends object = object> {
+  /** Stable account/scope identity. Changing it starts a new persistence session. */
+  identity?: string;
   load: (
     gridId: string,
     context: GridPersistenceContext<Row>,
@@ -828,6 +856,7 @@ export interface GridOptions<Row extends object> {
   state?: Partial<GridState<Row>>;
   defaultState?: GridInitialState<Row>;
   persistence?: GridPersistence<Row> | false;
+  temporal?: GridTemporalContext;
   onStateChange?: (state: GridState<Row>, event: GridEvent) => void;
   onError?: (error: Error, event: GridEvent) => void;
 }

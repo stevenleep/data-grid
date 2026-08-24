@@ -7,7 +7,8 @@
 - Validate and normalize built-in and custom filter value kinds, empty groups, JSON values, totals, rows, summary/facet elements, warnings, and cursor page metadata.
 - Remove controlled-query callback echoes and add independently cancellable, shared async option loading.
 - Harden Ant Design composition with safe protocol-node rendering, reactive standalone actions, explicit selection ownership, keyboard activation, accessible labels, pagination guards, and resize cleanup.
-- Add V8 coverage gates, immutable GitHub Actions, React 18/19 packed-consumer runtime rendering tests, modern TypeScript export checks, Vercel runtime pinning, and npm Trusted Publishing documentation.
+- Add V8 coverage gates; optional UI peers with a Core-only consumer; React 18/19, TypeScript 5.4/7, Node 20/26, and packed Vite compatibility checks; and a Demo gzip budget.
+- Split npm Trusted Publishing into an unprivileged verified-artifact job and a minimal digest-checking OIDC publish job; add pinned Actions, Dependabot, a security policy, deterministic Vercel configuration, and first-publish guidance.
 
 ## 0.1.0
 

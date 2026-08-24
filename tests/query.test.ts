@@ -400,4 +400,174 @@ describe('query protocol', () => {
       'functional rowKey requires definition.projection.rowKey',
     );
   });
+
+  it('uses declared option/entity identity instead of labels or object references', () => {
+    interface RelationRow {
+      id: string;
+      owner: { id: number; label: string };
+      reviewers: Array<{ id: number; label: string }>;
+    }
+    const relationDefinition = resolveGridDefinition<RelationRow>({
+      id: 'entity-identity',
+      rowKey: 'id',
+      fields: [
+        { id: 'owner', title: 'Owner', valueType: 'relation', filter: true },
+        { id: 'reviewers', title: 'Reviewers', valueType: 'user', filter: true },
+      ],
+    });
+    const row: RelationRow = {
+      id: 'one',
+      owner: { id: 7, label: 'Old label' },
+      reviewers: [{ id: 8, label: 'Ada' }],
+    };
+
+    expect(
+      matchesGridCondition(
+        row,
+        relationDefinition.fieldMap.get('owner')!,
+        createFilterCondition('owner', 'in', [7]),
+      ),
+    ).toBe(true);
+    expect(
+      matchesGridCondition(
+        row,
+        relationDefinition.fieldMap.get('reviewers')!,
+        createFilterCondition('reviewers', 'containsAny', [{ id: 8, label: 'Renamed' }]),
+      ),
+    ).toBe(true);
+    expect(
+      matchesGridCondition(
+        row,
+        relationDefinition.fieldMap.get('owner')!,
+        createFilterCondition('owner', 'equals', { id: 9, label: 'Old label' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('evaluates relative dates with an explicit timezone, week start and clock', () => {
+    interface DateRow {
+      id: string;
+      occurredAt: string;
+    }
+    const dateDefinition = resolveGridDefinition<DateRow>({
+      id: 'temporal-query',
+      rowKey: 'id',
+      fields: [{ id: 'occurredAt', title: 'Occurred', valueType: 'dateTime', filter: true }],
+    });
+    const field = dateDefinition.fieldMap.get('occurredAt')!;
+    const clock = () => new Date('2026-08-24T00:30:00.000Z');
+    const nextLocalDay: DateRow = { id: 'next', occurredAt: '2026-08-24T08:00:00.000Z' };
+
+    expect(
+      matchesGridCondition(nextLocalDay, field, createFilterCondition('occurredAt', 'today'), {
+        timeZone: 'America/Los_Angeles',
+        now: clock,
+      }),
+    ).toBe(false);
+    expect(
+      matchesGridCondition(nextLocalDay, field, createFilterCondition('occurredAt', 'tomorrow'), {
+        timeZone: 'America/Los_Angeles',
+        now: clock,
+      }),
+    ).toBe(true);
+
+    const sunday: DateRow = { id: 'sunday', occurredAt: '2026-08-23' };
+    expect(
+      matchesGridCondition(sunday, field, createFilterCondition('occurredAt', 'lastWeek'), {
+        timeZone: 'UTC',
+        weekStartsOn: 1,
+        now: clock,
+      }),
+    ).toBe(true);
+    expect(
+      matchesGridCondition(sunday, field, createFilterCondition('occurredAt', 'thisWeek'), {
+        timeZone: 'UTC',
+        weekStartsOn: 0,
+        now: clock,
+      }),
+    ).toBe(true);
+
+    const offsetless: DateRow = { id: 'offsetless', occurredAt: '2026-08-24T10:00:00' };
+    expect(
+      matchesGridCondition(
+        offsetless,
+        field,
+        createFilterCondition('occurredAt', 'onOrAfter', '2026-08-24T10:00:00Z'),
+      ),
+    ).toBe(true);
+    expect(
+      matchesGridCondition(
+        offsetless,
+        field,
+        createFilterCondition('occurredAt', 'onOrBefore', '2026-08-24T10:00:00Z'),
+      ),
+    ).toBe(true);
+
+    expect(() =>
+      matchesGridCondition(sunday, field, createFilterCondition('occurredAt', 'today'), {
+        timeZone: 'Not/A_Timezone',
+        now: clock,
+      }),
+    ).toThrow('timeZone');
+  });
+
+  it('validates all local row keys before paging and preserves empty custom search text', () => {
+    interface FlexibleRow {
+      id: string | number;
+      name: string;
+    }
+    const localDefinition = resolveGridDefinition<FlexibleRow>({
+      id: 'local-integrity',
+      rowKey: 'id',
+      fields: [
+        {
+          id: 'name',
+          title: 'Name',
+          searchText: () => '',
+        },
+      ],
+    });
+    const query: GridQuery = {
+      pagination: { type: 'offset', page: 1, pageSize: 1 },
+      keyword: 'hidden',
+      filters: createFilterGroup(),
+      sorts: [],
+    };
+    expect(() =>
+      applyLocalGridQuery(
+        [
+          { id: 1, name: 'hidden' },
+          { id: '1', name: 'hidden' },
+        ],
+        query,
+        localDefinition,
+      ),
+    ).toThrow('row keys must be unique');
+
+    expect(applyLocalGridQuery([{ id: 1, name: 'hidden' }], query, localDefinition).rows).toEqual(
+      [],
+    );
+  });
+
+  it('rejects malformed cursor state and duplicate semantic ids at runtime', () => {
+    const capabilities = resolveGridCapabilities(
+      createRemoteSource<Row>(async () => ({ rows: [] }), {
+        capabilities: { pagination: 'cursor', sort: { max: 3 } },
+      }),
+    );
+    const query: GridQuery = {
+      pagination: { type: 'cursor', pageSize: 20, cursor: '' },
+      keyword: '',
+      filters: createFilterGroup(),
+      sorts: [],
+    };
+    expect(() => validateGridQuery(query, definition, capabilities)).toThrow('Cursor pagination');
+
+    query.pagination = { type: 'cursor', pageSize: 20 };
+    query.filters.children = [
+      { ...createFilterCondition('name', 'contains', 'a'), id: 'duplicate' },
+      { ...createFilterCondition('score', 'equals', 1), id: 'duplicate' },
+    ];
+    expect(() => validateGridQuery(query, definition, capabilities)).toThrow('filter ids');
+  });
 });

@@ -17,7 +17,7 @@
 
 ### Core
 
-纯 TypeScript，不依赖 React、Ant Design、DOM 或 CSS。它负责：
+纯 TypeScript，不依赖 React、Ant Design、CSS 或 DOM 运行时。公共类型使用 Web/Node 共有的 `AbortSignal` 和本地持久化的可选 `Storage` 协议；没有 DOM typings 的 TypeScript 服务项目应在 `lib` 中加入 `DOM`，或提供兼容的 ambient types。它负责：
 
 - 解析字段和列定义。
 - 维护 query、columns、selection、data、views、editing、actions 七个状态域。
@@ -32,6 +32,8 @@
 ### AntD
 
 提供官方默认配方和可独立使用的 UI 原子。渲染层通过公开的 `GridInstance` 工作，不把 AntD 类型泄漏进 Core。
+
+当前三层使用一个 npm 包和显式子路径。React、React DOM、Ant Design 和图标包都声明为 optional peers：Core-only 消费项目不安装 UI 栈，使用 React/AntD 层的应用则自己选择并安装兼容版本。这是单包形式下的依赖隔离边界；未来只有在版本节奏、团队所有权或安装成本真正需要独立演进时，才应拆为多包。
 
 ## 核心设计原则
 

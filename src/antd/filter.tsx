@@ -17,7 +17,7 @@ import {
   Space,
   Tooltip,
 } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   addFilterNode,
@@ -34,19 +34,54 @@ import {
   type GridFilterCondition,
   type GridFilterGroup,
   type GridJsonValue,
+  type GridFilterOperator,
   type GridResolvedField,
 } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useControllableOpen, useGridOptions } from './hooks';
+import { gridDayjsValue } from './intl';
 import { resolveGridLocale } from './locale';
-import { operatorLabel } from './operators';
-import { renderGridNode } from './render';
+import { renderGridNode, safeGridText } from './render';
 
-function defaultOperator<Row extends object>(field: GridResolvedField<Row>) {
-  return field.filter
-    ? field.filter.defaultOperator || field.filter.operators?.[0] || 'equals'
-    : 'equals';
+function allowedOperators<Row extends object>(
+  field: GridResolvedField<Row>,
+  sourceOperators: GridFilterOperator[] | undefined,
+): GridFilterOperator[] {
+  if (!field.filter) return [];
+  const operators = field.filter.operators || ['equals'];
+  return sourceOperators
+    ? operators.filter((operator) => sourceOperators.includes(operator))
+    : operators;
+}
+
+function defaultOperator<Row extends object>(
+  field: GridResolvedField<Row>,
+  sourceOperators: GridFilterOperator[] | undefined,
+) {
+  const operators = allowedOperators(field, sourceOperators);
+  const configured = field.filter && field.filter.defaultOperator;
+  return configured && operators.includes(configured) ? configured : operators[0] || 'equals';
+}
+
+function sanitizeFilterGroup<Row extends object>(
+  group: GridFilterGroup,
+  fields: readonly GridResolvedField<Row>[],
+  sourceOperators: GridFilterOperator[] | undefined,
+): GridFilterGroup {
+  const fieldMap = new Map(fields.map((field) => [field.id, field]));
+  return {
+    ...group,
+    children: group.children.flatMap<GridFilterCondition | GridFilterGroup>((node) => {
+      if (node.type === 'group') return [sanitizeFilterGroup(node, fields, sourceOperators)];
+      const field = fieldMap.get(node.fieldId);
+      if (!field) return [];
+      const operators = allowedOperators(field, sourceOperators);
+      if (!operators.length) return [];
+      if (operators.includes(node.operator)) return [node];
+      return [{ ...node, operator: defaultOperator(field, sourceOperators), value: undefined }];
+    }),
+  };
 }
 
 function GridFilterValue<Row extends object>({
@@ -62,10 +97,19 @@ function GridFilterValue<Row extends object>({
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
   const [search, setSearch] = useState('');
-  const options = useGridOptions(field, search);
+  useEffect(() => setSearch(''), [field.id]);
   const valueKind = getFilterOperatorValueKind(
     condition.operator,
     field.filter ? field.filter.operatorValueKinds : undefined,
+  );
+  const optionLike = Boolean(
+    field.options ||
+    ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(field.valueType),
+  );
+  const options = useGridOptions(
+    field,
+    search,
+    valueKind !== 'none' && optionLike && !field.filterEditor,
   );
   const range = valueKind === 'range';
   if (valueKind === 'none') {
@@ -85,15 +129,11 @@ function GridFilterValue<Row extends object>({
     );
   }
 
-  const optionLike = Boolean(
-    field.options ||
-    ['select', 'multiSelect', 'status', 'user', 'relation', 'boolean'].includes(field.valueType),
-  );
   const resolvedOptions =
     field.valueType === 'boolean'
       ? [
-          { label: ui.language?.startsWith('en') ? 'Yes' : '是', value: true },
-          { label: ui.language?.startsWith('en') ? 'No' : '否', value: false },
+          { label: locale.yes, value: true },
+          { label: locale.no, value: false },
         ]
       : options.options.map((option) => ({
           ...option,
@@ -133,7 +173,10 @@ function GridFilterValue<Row extends object>({
     if (range) {
       const values = Array.isArray(condition.value) ? condition.value : [];
       const pickerValue: [Dayjs | null, Dayjs | null] | null = values.length
-        ? [values[0] ? dayjs(String(values[0])) : null, values[1] ? dayjs(String(values[1])) : null]
+        ? [
+            gridDayjsValue(values[0], field.valueType === 'dateTime', ui.timeZone),
+            gridDayjsValue(values[1], field.valueType === 'dateTime', ui.timeZone),
+          ]
         : null;
       return (
         <DatePicker.RangePicker
@@ -150,7 +193,7 @@ function GridFilterValue<Row extends object>({
         />
       );
     }
-    const current = condition.value ? dayjs(String(condition.value)) : null;
+    const current = gridDayjsValue(condition.value, field.valueType === 'dateTime', ui.timeZone);
     return (
       <DatePicker
         size="small"
@@ -172,14 +215,14 @@ function GridFilterValue<Row extends object>({
           <InputNumber
             size="small"
             stringMode={stringMode}
-            placeholder="Min"
+            placeholder={locale.minimum}
             value={values[0] as number | string | null | undefined}
             onChange={(value) => onChange([normalizeFilterValue(value) ?? null, values[1] ?? null])}
           />
           <InputNumber
             size="small"
             stringMode={stringMode}
-            placeholder="Max"
+            placeholder={locale.maximum}
             value={values[1] as number | string | null | undefined}
             onChange={(value) => onChange([values[0] ?? null, normalizeFilterValue(value) ?? null])}
           />
@@ -258,13 +301,13 @@ function GridFilterValue<Row extends object>({
         <Input
           size="small"
           allowClear
-          value={values[0] == null ? '' : String(values[0])}
+          value={values[0] == null ? '' : safeGridText(values[0])}
           onChange={(event) => onChange([event.target.value || null, values[1] ?? null])}
         />
         <Input
           size="small"
           allowClear
-          value={values[1] == null ? '' : String(values[1])}
+          value={values[1] == null ? '' : safeGridText(values[1])}
           onChange={(event) => onChange([values[0] ?? null, event.target.value || null])}
         />
       </Space.Compact>
@@ -275,7 +318,7 @@ function GridFilterValue<Row extends object>({
     <Input
       size="small"
       allowClear
-      value={condition.value == null ? '' : String(condition.value)}
+      value={condition.value == null ? '' : safeGridText(condition.value)}
       placeholder={field.filter ? field.filter.placeholder : undefined}
       onChange={(event) => onChange(event.target.value)}
     />
@@ -304,7 +347,14 @@ function GridFilterGroupEditor<Row extends object>({
     const field = fields[0];
     if (!field || !canAdd) return;
     onChange(
-      addFilterNode(root, group.id, createFilterCondition(field.id, defaultOperator(field))),
+      addFilterNode(
+        root,
+        group.id,
+        createFilterCondition(
+          field.id,
+          defaultOperator(field, instance.capabilities.filter.operators),
+        ),
+      ),
     );
   };
 
@@ -344,7 +394,7 @@ function GridFilterGroupEditor<Row extends object>({
               )
             }
           >
-            NOT
+            {locale.not}
           </Checkbox>
         )}
       </div>
@@ -374,7 +424,14 @@ function GridFilterGroupEditor<Row extends object>({
           }
           const field = fields.find((item) => item.id === node.fieldId) || fields[0];
           if (!field) return null;
-          const operators = field.filter ? field.filter.operators || ['equals'] : ['equals'];
+          const operators = allowedOperators(field, instance.capabilities.filter.operators);
+          const effectiveOperator = operators.includes(node.operator)
+            ? node.operator
+            : defaultOperator(field, instance.capabilities.filter.operators);
+          const effectiveCondition =
+            effectiveOperator === node.operator
+              ? node
+              : { ...node, operator: effectiveOperator, value: undefined };
           return (
             <div className="hui-grid__filter-rule" key={node.id}>
               <Space.Compact className="hui-grid__filter-rule-main">
@@ -392,7 +449,10 @@ function GridFilterGroupEditor<Row extends object>({
                       updateFilterNode(root, node.id, (current) => ({
                         ...(current as GridFilterCondition),
                         fieldId,
-                        operator: defaultOperator(nextField),
+                        operator: defaultOperator(
+                          nextField,
+                          instance.capabilities.filter.operators,
+                        ),
                         value: undefined,
                       })),
                     );
@@ -400,9 +460,9 @@ function GridFilterGroupEditor<Row extends object>({
                 />
                 <Select
                   size="small"
-                  value={node.operator}
+                  value={effectiveOperator}
                   options={operators.map((operator) => ({
-                    label: operatorLabel(operator, ui.language),
+                    label: locale.operatorLabel(operator),
                     value: operator,
                   }))}
                   onChange={(operator) =>
@@ -419,7 +479,7 @@ function GridFilterGroupEditor<Row extends object>({
               <div className="hui-grid__filter-value">
                 <GridFilterValue
                   field={field}
-                  condition={node}
+                  condition={effectiveCondition}
                   onChange={(value) =>
                     onChange(
                       updateFilterNode(root, node.id, (current) => ({
@@ -502,8 +562,13 @@ export function GridFilterBuilder<Row extends object>({
 }: GridFilterBuilderProps<Row>) {
   const instance = useGridInstance<Row>();
   const fields = useMemo(
-    () => supplied || instance.definition.fields.filter((field) => field.filter),
-    [instance, supplied],
+    () =>
+      (supplied || instance.definition.fields).filter(
+        (field) =>
+          field.filter &&
+          allowedOperators(field, instance.capabilities.filter.operators).length > 0,
+      ),
+    [instance, instance.capabilities.filter.operators, supplied],
   );
   return (
     <GridFilterGroupEditor
@@ -533,9 +598,13 @@ export function GridFilterPanel<Row extends object>({
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
+  const availableFields = (fields || instance.definition.fields).filter(
+    (field) =>
+      field.filter && allowedOperators(field, instance.capabilities.filter.operators).length > 0,
+  );
   const resolveValueKind = (condition: GridFilterCondition) => {
     const field =
-      fields?.find((item) => item.id === condition.fieldId) ||
+      availableFields.find((item) => item.id === condition.fieldId) ||
       instance.definition.fieldMap.get(condition.fieldId);
     return getFilterOperatorValueKind(
       condition.operator,
@@ -558,7 +627,14 @@ export function GridFilterPanel<Row extends object>({
         <Button
           size="small"
           type="primary"
-          onClick={() => onApply?.(pruneFilterGroup(value, resolveValueKind))}
+          onClick={() =>
+            onApply?.(
+              pruneFilterGroup(
+                sanitizeFilterGroup(value, availableFields, instance.capabilities.filter.operators),
+                resolveValueKind,
+              ),
+            )
+          }
         >
           {locale.apply}
         </Button>

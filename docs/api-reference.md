@@ -21,6 +21,7 @@
 - `defineGridSchema`
 - `defineGridRuntime`
 - `bindGridSchema`
+- `parseGridSchema`（不可信 `unknown` 的协议边界）
 - `builtinValueTypes`
 
 核心类型：`GridDefinition`、`GridProjectionDefinition`、`GridFieldDefinition`、`GridColumnDefinition`、`GridValueTypeDefinition`、`GridSchema`、`GridRuntime`。
@@ -32,6 +33,7 @@
 - `createControlledSource`
 - `resolveGridCapabilities`
 - `normalizeGridResult`
+- `normalizeGridOptions`（不可信选项/facet 的协议边界）
 
 核心类型：`GridDataSource`、`GridReadInput`、`GridReadResult`、`GridCapabilities`、`GridTotal`、`GridPageInfo`。
 
@@ -50,6 +52,13 @@
 - `getRequestSignature`
 
 核心类型：`GridQuery`、`GridRequestQuery`、`GridFilterGroup`、`GridFilterCondition`、`GridFilterValueKind`、`GridFilterOperatorValueKinds`、`GridSort`、`GridPagination`。
+
+## 持久化
+
+- `createLocalGridPersistence`
+- `parseGridPersistedState`（不可信自定义/远端 preferences 的协议边界）
+
+核心类型：`GridPersistence`、`GridPersistedState`、`GridView`、`LocalGridPersistenceOptions`。
 
 ## 实例
 
@@ -114,6 +123,7 @@ instance.options; // load(fieldId, search?, { signal? }) / clear
 | `source`                                | Local、Remote 或 Controlled 数据源  |
 | `defaultState` / `state`                | 非受控初值或受控 slice              |
 | `persistence`                           | 本地或服务端偏好协议                |
+| `temporal`                              | Local 相对日期的时区、周起始与时钟  |
 | `toolbar` / `footer`                    | 默认配方能力开关                    |
 | `rowActions`                            | 行操作可见数量、宽度和标题          |
 | `onRowClick` / `onCellClick`            | 语义交互回调                        |

@@ -1,4 +1,4 @@
-import { resolveGridDefinition } from './definition';
+import { definitionSignature, resolveGridDefinition } from './definition';
 import {
   cloneColumnState,
   cloneJson,
@@ -13,24 +13,39 @@ import {
   stableStringify,
   uniqueStrings,
 } from './model';
-import { applyLocalGridQuery, compileGridQuery, validateGridQuery } from './query';
-import { normalizeGridResult, resolveGridCapabilities, sourceDataIdentity } from './source';
+import { parseGridPersistedState } from './persistence';
+import {
+  applyLocalGridQuery,
+  compileGridQuery,
+  isGridJsonValue,
+  validateGridQuery,
+  validateGridTemporalContext,
+} from './query';
+import {
+  normalizeGridOptions,
+  normalizeGridResult,
+  resolveGridCapabilities,
+  sourceDataIdentity,
+} from './source';
 import type {
   GridAction,
   GridActionContext,
   GridActionPlacement,
   GridActionsApi,
   GridColumnState,
+  GridDataSource,
   GridDataState,
   GridDensity,
   GridEvent,
   GridEventReason,
+  GridFilterCondition,
   GridFilterGroup,
   GridInstance,
   GridOption,
   GridOptions,
   GridPagination,
   GridPersistedState,
+  GridPersistence,
   GridQuery,
   GridReadResult,
   GridRemoteSource,
@@ -54,11 +69,36 @@ interface RequestCacheEntry<Row extends object> {
 }
 
 interface OptionCacheEntry {
+  fieldId: string;
   value?: GridOption[];
   promise?: Promise<GridOption[]>;
   controller?: AbortController;
   consumers?: number;
   createdAt: number;
+}
+
+const abortedOperation = Symbol('grid-aborted-operation');
+
+function raceWithAbort<Value>(
+  promise: Promise<Value>,
+  signal: AbortSignal,
+): Promise<Value | typeof abortedOperation> {
+  if (signal.aborted) return Promise.resolve(abortedOperation);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => resolve(abortedOperation));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
 }
 
 function leafColumns<Row extends object>(
@@ -174,12 +214,12 @@ function isEditResult<Row extends object>(
 }
 
 export class GridStore<Row extends object> implements GridInstance<Row> {
-  readonly definition: GridResolvedDefinition<Row>;
+  private definitionValue: GridResolvedDefinition<Row>;
   capabilities: GridResolvedCapabilities;
   private optionsValue: GridOptions<Row>;
   private state: GridState<Row>;
   private internalState: GridState<Row>;
-  private readonly defaultQuery: GridQuery;
+  private defaultQuery: GridQuery;
   private readonly defaultColumns: GridColumnState;
   private listeners = new Set<() => void>();
   private eventListeners = new Set<(event: GridEvent) => void>();
@@ -188,7 +228,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private optionCache = new Map<string, OptionCacheEntry>();
   private actionControllers = new Map<string, AbortController>();
   private editController?: AbortController;
-  private editRollback?: { key: GridRowKey; row: Row };
+  private editRollback?: { key: GridRowKey; row: Row; optimisticRow: Row };
   private requestController?: AbortController;
   private requestPromise?: Promise<void>;
   private activeRequestSignature?: string;
@@ -198,7 +238,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private lifecycleId = 0;
   private persistenceTimer?: ReturnType<typeof setTimeout>;
   private persistenceRestored = false;
-  private persistencePromise?: Promise<void>;
+  private persistencePromise?: Promise<boolean>;
   private batchDepth = 0;
   private pendingChanged = false;
   private pendingEvent?: GridEvent;
@@ -206,12 +246,20 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private pendingPersist = false;
   private pendingLoad?: { force: boolean; reason: GridRequestReason };
   private sourceIdentity: unknown[];
+  private sourceGeneration = 0;
+  private persistenceGeneration = 0;
+  private persistenceIdentity: unknown;
+  private persistenceSaveChains = new Map<unknown, Promise<void>>();
 
   constructor(options: GridOptions<Row>) {
+    validateGridTemporalContext(options.temporal);
+    validateStateContainer(options.defaultState, 'Grid defaultState');
+    validateStateContainer(options.state, 'Grid state');
     this.optionsValue = options;
-    this.definition = resolveGridDefinition(options.definition);
+    this.definitionValue = resolveGridDefinition(options.definition);
     this.capabilities = resolveGridCapabilities(options.source);
     this.sourceIdentity = sourceDataIdentity(options.source);
+    this.persistenceIdentity = this.getPersistenceIdentity(options.persistence);
     const pageSize = normalizePageSize(this.definition.defaults?.pageSize || 20);
     this.defaultQuery = defaultQuery(this.capabilities.pagination, pageSize);
     this.defaultColumns = defaultColumnState(
@@ -224,7 +272,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     );
     const columns = mergeInitialColumns(this.defaultColumns, options.defaultState?.columns);
     validateGridQuery(query, this.definition, this.capabilities);
-    this.internalState = {
+    const internalState: GridState<Row> = {
       query,
       columns,
       selection: options.defaultState?.selection || {
@@ -240,8 +288,15 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       editing: { saving: false },
       actions: { pending: {}, errors: {} },
     };
-    this.state = mergeControlledState(this.internalState, options.state);
+    const state = mergeControlledState(internalState, options.state);
+    this.validateStateProtocol(state, 'Grid initial state', this.definition, this.capabilities);
+    this.internalState = internalState;
+    this.state = state;
     if (this.capabilities.projection) this.compileRequest(this.state.query, this.state.columns);
+  }
+
+  get definition(): GridResolvedDefinition<Row> {
+    return this.definitionValue;
   }
 
   getState = () => this.state;
@@ -258,36 +313,120 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   updateOptions = (options: GridOptions<Row>) => {
     if (this.destroyed) return;
+    validateGridTemporalContext(options.temporal);
+    validateStateContainer(options.state, 'Grid state');
     const resolved = resolveGridDefinition(options.definition);
     if (resolved.id !== this.definition.id || resolved.revision !== this.definition.revision) {
       throw new Error('Changing a grid definition requires a new GridInstance.');
     }
+    if (definitionSignature(resolved) !== definitionSignature(this.definition)) {
+      throw new Error(
+        'Changing grid fields, columns or protocol structure requires a new definition revision.',
+      );
+    }
 
+    const previousOptions = this.optionsValue;
     const previousState = this.state;
-    const previousSourceMode = this.optionsValue.source.mode;
+    const previousSourceMode = previousOptions.source.mode;
+    const sourceModeChanged = previousSourceMode !== options.source.mode;
     const previousSourceIdentity = this.sourceIdentity;
-    this.optionsValue = options;
-    this.capabilities = resolveGridCapabilities(options.source);
-    this.sourceIdentity = sourceDataIdentity(options.source);
-    if (options.state) this.internalState = { ...this.internalState, ...options.state };
+    const previousDatasetIdentity = this.getSourceDatasetIdentity(previousOptions.source);
+    const nextCapabilities = resolveGridCapabilities(options.source);
+    const nextSourceIdentity = sourceDataIdentity(options.source);
+    const nextDatasetIdentity = this.getSourceDatasetIdentity(options.source);
+    const nextPersistenceIdentity = this.getPersistenceIdentity(options.persistence);
+    const persistenceChanged = !Object.is(this.persistenceIdentity, nextPersistenceIdentity);
+    const sourceChanged = !shallowArrayEqual(previousSourceIdentity, nextSourceIdentity);
+    const datasetChanged = !shallowArrayEqual(previousDatasetIdentity, nextDatasetIdentity);
+    const optionFieldsChanged = resolved.fields
+      .filter((field) => this.definition.fieldMap.get(field.id)?.options !== field.options)
+      .map((field) => field.id);
 
-    let next = mergeControlledState(this.internalState, options.state);
-    if (next.query.pagination.type !== this.capabilities.pagination) {
+    let nextInternal = options.state
+      ? { ...this.internalState, ...options.state }
+      : this.internalState;
+    let next = mergeControlledState(nextInternal, options.state);
+    let normalizedControlledState = options.state;
+    if (
+      !isPlainRecord(next.query) ||
+      !isPlainRecord(next.query.pagination) ||
+      typeof next.query.keyword !== 'string'
+    ) {
+      throw new Error('Grid state query and pagination must match the grid query protocol.');
+    }
+    if (next.query.pagination.type !== nextCapabilities.pagination) {
       const pageSize = next.query.pagination.pageSize;
       const pagination: GridPagination =
-        this.capabilities.pagination === 'cursor'
+        nextCapabilities.pagination === 'cursor'
           ? { type: 'cursor', pageSize }
           : { type: 'offset', page: 1, pageSize };
       next = { ...next, query: { ...next.query, pagination } };
-      this.internalState = { ...this.internalState, query: next.query };
+      nextInternal = { ...nextInternal, query: next.query };
+      if (normalizedControlledState?.query) {
+        normalizedControlledState = { ...normalizedControlledState, query: next.query };
+      }
+    } else if (datasetChanged && !this.isSliceControlled(options.state, 'query')) {
+      const query = { ...next.query, pagination: this.resetPagination(next.query.pagination) };
+      next = { ...next, query };
+      nextInternal = { ...nextInternal, query };
     }
-    validateGridQuery(next.query, this.definition, this.capabilities);
+    const reconciledQuery = this.reconcileQueryForCapabilities(
+      next.query,
+      resolved,
+      nextCapabilities,
+    );
+    if (reconciledQuery !== next.query) {
+      next = { ...next, query: reconciledQuery };
+      nextInternal = { ...nextInternal, query: reconciledQuery };
+      if (this.isSliceControlled(normalizedControlledState, 'query')) {
+        normalizedControlledState = { ...normalizedControlledState, query: reconciledQuery };
+      }
+    }
+    validateGridQuery(next.query, resolved, nextCapabilities);
+    this.validateStateProtocol(next, 'Grid state', resolved, nextCapabilities);
+    if (nextCapabilities.projection) {
+      const projectedQuery = {
+        ...next.query,
+        projection: this.visibleFieldIds(next.columns, next.query.projection, resolved),
+      };
+      compileGridQuery(projectedQuery, resolved);
+    }
+
+    if (persistenceChanged) {
+      this.flushPendingPersistence(previousOptions.persistence, previousState, this.definition);
+    }
+
+    this.optionsValue =
+      normalizedControlledState === options.state
+        ? options
+        : { ...options, state: normalizedControlledState };
+    this.definitionValue = resolved;
+    this.capabilities = nextCapabilities;
+    this.sourceIdentity = nextSourceIdentity;
+    this.persistenceIdentity = nextPersistenceIdentity;
+    this.internalState = nextInternal;
     this.state = next;
+    if (previousState.query.pagination.type !== nextCapabilities.pagination) {
+      this.defaultQuery = defaultQuery(
+        nextCapabilities.pagination,
+        normalizePageSize(this.definition.defaults?.pageSize || 20),
+      );
+    }
+    if (persistenceChanged) {
+      this.persistenceGeneration += 1;
+      this.persistenceRestored = false;
+      this.persistencePromise = undefined;
+    }
+    if (datasetChanged) this.invalidateSourceWork();
+    else if (sourceChanged || sourceModeChanged) {
+      this.invalidateReadRequest();
+    }
+    if (!datasetChanged) optionFieldsChanged.forEach((fieldId) => this.clearOptionCache(fieldId));
+    next = this.state;
     if (!sameState(previousState, next)) this.listeners.forEach((listener) => listener());
 
     const queryChanged = previousState.query !== next.query;
     const columnsChanged = previousState.columns !== next.columns;
-    const sourceChanged = !shallowArrayEqual(previousSourceIdentity, this.sourceIdentity);
     if (
       queryChanged &&
       previousState.selection === next.selection &&
@@ -297,18 +436,23 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const afterScope = this.requestScope(next.query, next.columns);
       if (beforeScope !== afterScope) this.clearSelection('system');
     }
-    if (!this.started) return;
-    if (sourceChanged || previousSourceMode !== options.source.mode) {
+    if (sourceChanged || sourceModeChanged) {
       this.requestCache.clear();
     }
+    if (persistenceChanged && this.started && options.persistence) {
+      void this.restorePersistenceOnce().then((requestChanged) => {
+        if (requestChanged && this.started && !this.destroyed) this.queueLoad(false, 'query');
+      });
+    }
+    if (!this.started) return;
     if (options.source.mode === 'controlled') {
-      if (sourceChanged || previousSourceMode !== options.source.mode) {
+      if (sourceChanged || sourceModeChanged) {
         this.syncControlledSource();
       }
-      if (previousSourceMode !== options.source.mode) {
+      if (sourceModeChanged) {
         this.notifyControlledQuery(createGridEvent('query.external', 'source'));
       }
-    } else if (sourceChanged || previousSourceMode !== options.source.mode) {
+    } else if (sourceChanged || sourceModeChanged) {
       this.queueLoad(true, 'source');
     } else if (queryChanged) {
       this.queueLoad(false, 'query');
@@ -328,21 +472,25 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   };
 
   stop = () => {
-    if (!this.started) return;
+    const wasStarted = this.started;
     this.started = false;
-    this.lifecycleId += 1;
-    this.requestController?.abort();
-    this.requestController = undefined;
-    this.requestPromise = undefined;
-    this.activeRequestSignature = undefined;
+    if (wasStarted) this.lifecycleId += 1;
+    if (this.persistencePromise) {
+      this.persistenceGeneration += 1;
+      this.persistenceRestored = false;
+      this.persistencePromise = undefined;
+    }
+    this.sourceGeneration += 1;
+    this.invalidateReadRequest();
     this.editController?.abort();
     this.editController = undefined;
     this.rollbackOptimisticEdit();
     this.actionControllers.forEach((controller) => controller.abort());
     this.actionControllers.clear();
-    this.optionCache.forEach((entry, key) => {
+    [...this.optionCache.entries()].forEach(([key, entry]) => {
+      if (!entry.promise) return;
       entry.controller?.abort();
-      if (entry.promise) this.optionCache.delete(key);
+      this.optionCache.delete(key);
     });
     const pendingActions = Object.fromEntries(
       Object.keys(this.state.actions.pending).map((key) => [key, false]),
@@ -373,6 +521,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   };
 
   batch = (callback: () => void) => {
+    if (this.destroyed) return;
     this.batchDepth += 1;
     try {
       callback();
@@ -457,6 +606,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   columns = {
     getDefaultState: () => cloneColumnState(this.defaultColumns),
     setVisible: (columnId: string, visible: boolean) => {
+      if (typeof columnId !== 'string' || typeof visible !== 'boolean') {
+        throw new Error('Column visibility requires a column id and boolean visible value.');
+      }
       const column = this.definition.columnMap.get(columnId);
       if (!column || column.children?.length || column.hideable === false) return;
       const hidden = new Set(this.state.columns.hidden);
@@ -468,6 +620,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     setOrder: (columnIds: string[]) => {
+      if (!Array.isArray(columnIds) || columnIds.some((id) => typeof id !== 'string')) {
+        throw new Error('Column order must be an array of column ids.');
+      }
       const leaves = leafColumns(this.definition.columns);
       const known = new Set(leaves.map((column) => column.id));
       const order = uniqueStrings(columnIds.filter((id) => known.has(id)));
@@ -485,6 +640,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.setColumns({ ...this.state.columns, order }, createGridEvent('columns.order', 'user'));
     },
     setWidth: (columnId: string, width: number) => {
+      if (typeof columnId !== 'string' || typeof width !== 'number' || !Number.isFinite(width)) {
+        throw new Error('Column width must be a finite number.');
+      }
       const column = this.definition.columnMap.get(columnId);
       if (!column || column.children?.length || column.resizable === false) return;
       const minimum = column.minWidth || 72;
@@ -499,6 +657,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     setPinned: (columnId: string, pinned: 'left' | 'right' | null) => {
+      if (
+        typeof columnId !== 'string' ||
+        (pinned !== null && pinned !== 'left' && pinned !== 'right')
+      ) {
+        throw new Error('Pinned column state must be left, right or null.');
+      }
       const column = this.definition.columnMap.get(columnId);
       if (!column || column.children?.length || column.pinnable === false) return;
       this.setColumns(
@@ -510,6 +674,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     setDensity: (density: GridDensity) => {
+      if (!['compact', 'default', 'comfortable'].includes(density)) {
+        throw new Error('Grid density is invalid.');
+      }
       this.setColumns(
         { ...this.state.columns, density },
         createGridEvent('columns.density', 'user', { density }),
@@ -525,10 +692,14 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   selection = {
     set: (keys: readonly GridRowKey[], rows: readonly Row[] = []) => {
-      const validKeys = keys.filter(
-        (key): key is GridRowKey => typeof key === 'string' || typeof key === 'number',
-      );
-      rows.forEach((row) => this.selectedRows.set(this.definition.getRowKey(row), row));
+      if (!Array.isArray(keys) || !Array.isArray(rows)) {
+        throw new Error('Grid selection keys and rows must be arrays.');
+      }
+      const validKeys = keys.filter(isValidGridRowKey);
+      const rowEntries = rows.map((row) => [this.definition.getRowKey(row), row] as const);
+      if (this.state.selection.mode !== 'allMatching') {
+        rowEntries.forEach(([key, row]) => this.selectedRows.set(key, row));
+      }
       if (this.state.selection.mode === 'allMatching') {
         const selected = new Set(validKeys);
         const currentKeys = this.state.data.rows.map(this.definition.getRowKey);
@@ -547,9 +718,15 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.setSelection({ mode: 'explicit', selectedKeys: [...keySet] });
     },
     toggle: (key: GridRowKey, row: Row, selected?: boolean) => {
+      if (!isValidGridRowKey(key)) throw new Error('Grid selection requires a valid row key.');
+      const rowKey = this.definition.getRowKey(row);
+      if (rowKey !== key) {
+        throw new Error(
+          `Selected row key ${typeof rowKey}:${String(rowKey)} does not match selection key ${typeof key}:${String(key)}.`,
+        );
+      }
       const current = this.selection.isSelected(key);
       const nextSelected = selected ?? !current;
-      this.selectedRows.set(key, row);
       if (this.state.selection.mode === 'allMatching') {
         const excluded = new Set(this.state.selection.excludedKeys);
         if (nextSelected) excluded.delete(key);
@@ -557,6 +734,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         this.setSelection({ ...this.state.selection, excludedKeys: [...excluded] });
         return;
       }
+      this.selectedRows.set(key, row);
       const keys = new Set(this.state.selection.selectedKeys);
       if (nextSelected) keys.add(key);
       else {
@@ -566,8 +744,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       this.setSelection({ mode: 'explicit', selectedKeys: [...keys] });
     },
     selectPage: (rows: readonly Row[] = this.state.data.rows) => {
-      const keys = rows.map(this.definition.getRowKey);
-      rows.forEach((row) => this.selectedRows.set(this.definition.getRowKey(row), row));
+      if (!Array.isArray(rows)) throw new Error('Selected page rows must be an array.');
+      const entries = rows.map((row) => [this.definition.getRowKey(row), row] as const);
+      const keys = entries.map(([key]) => key);
+      if (this.state.selection.mode !== 'allMatching') {
+        entries.forEach(([key, row]) => this.selectedRows.set(key, row));
+      }
       if (this.state.selection.mode === 'allMatching') {
         const excluded = new Set(this.state.selection.excludedKeys);
         keys.forEach((key) => excluded.delete(key));
@@ -601,18 +783,23 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       const selection = this.state.selection;
       return selection.mode === 'explicit'
         ? selection.selectedKeys.includes(key)
-        : !selection.excludedKeys.includes(key);
+        : selection.querySignature === this.requestScope() && !selection.excludedKeys.includes(key);
     },
     getCount: () => {
       const selection = this.state.selection;
       return selection.mode === 'explicit'
         ? selection.selectedKeys.length
-        : Math.max(0, selection.total - selection.excludedKeys.length);
+        : selection.querySignature === this.requestScope()
+          ? Math.max(0, selection.total - selection.excludedKeys.length)
+          : 0;
     },
     getSelectedRows: () => {
       if (this.state.selection.mode === 'allMatching') return [];
+      const currentRows = new Map(
+        this.state.data.rows.map((row) => [this.definition.getRowKey(row), row]),
+      );
       return this.state.selection.selectedKeys
-        .map((key) => this.selectedRows.get(key))
+        .map((key) => currentRows.get(key) || this.selectedRows.get(key))
         .filter((row): row is Row => Boolean(row));
     },
   };
@@ -624,6 +811,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       return this.load(true, 'refresh');
     },
     updateRow: (key: GridRowKey, row: Row) => {
+      const replacementKey = this.definition.getRowKey(row);
+      if (replacementKey !== key) {
+        throw new Error(
+          `Grid row replacement key ${typeof replacementKey}:${String(replacementKey)} does not match target key ${typeof key}:${String(key)}.`,
+        );
+      }
       const rows = this.state.data.rows.map((current) =>
         this.definition.getRowKey(current) === key ? row : current,
       );
@@ -643,6 +836,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   views = {
     create: (name: string, scope: GridView['scope'] = 'private') => {
+      if (typeof name !== 'string' || !['private', 'shared', 'system'].includes(scope)) {
+        throw new Error('A grid view requires a string name and valid scope.');
+      }
       const trimmed = name.trim();
       if (!trimmed) return undefined;
       const now = new Date().toISOString();
@@ -666,6 +862,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       return view;
     },
     rename: (id: string, name: string) => {
+      if (typeof id !== 'string' || typeof name !== 'string') {
+        throw new Error('Renaming a grid view requires string id and name values.');
+      }
       const trimmed = name.trim();
       if (!trimmed) return;
       const view = this.state.views.items.find((item) => item.id === id);
@@ -687,6 +886,9 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     duplicate: (id: string, name?: string) => {
+      if (typeof id !== 'string' || (name !== undefined && typeof name !== 'string')) {
+        throw new Error('Duplicating a grid view requires a string id and optional name.');
+      }
       const source = this.state.views.items.find((item) => item.id === id);
       if (!source) return undefined;
       const now = new Date().toISOString();
@@ -745,7 +947,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         ? this.reconcileColumns(view.columns)
         : cloneColumnState(this.defaultColumns);
       validateGridQuery(query, this.definition, this.capabilities);
+      const previousRequest = getRequestSignature(this.compileRequest());
+      const desiredRequest = getRequestSignature(this.compileRequest(query, columns));
       this.selectedRows.clear();
+      const event = createGridEvent('views.apply', 'user', { id });
       this.commit(
         {
           ...this.internalState,
@@ -754,10 +959,14 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
           selection: { mode: 'explicit', selectedKeys: [] },
           views: { ...this.state.views, activeId: view?.id, dirty: false },
         },
-        createGridEvent('views.apply', 'user', { id }),
+        event,
         true,
       );
-      this.queueLoad(false, 'query');
+      if (this.optionsValue.source.mode === 'controlled') {
+        if (previousRequest !== desiredRequest) this.notifyControlledQuery(event, query, columns);
+      } else if (previousRequest !== getRequestSignature(this.compileRequest())) {
+        this.queueLoad(false, 'query');
+      }
     },
     remove: (id: string) => {
       const view = this.state.views.items.find((item) => item.id === id);
@@ -790,6 +999,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     begin: (row: Row, fieldId: string) => {
+      if (this.destroyed) return;
       const field = this.definition.fieldMap.get(fieldId);
       if (!field || !this.editing.canEdit(row, fieldId)) return;
       const value = field.getValue(row);
@@ -828,6 +1038,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
     },
     commit: async () => {
+      if (this.destroyed) return false;
       const active = this.state.editing.active;
       const editing = this.definition.editing;
       if (!active || !editing || this.state.editing.saving) return false;
@@ -836,10 +1047,6 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         (item) => this.definition.getRowKey(item) === active.rowKey,
       );
       if (!field || !row) return false;
-      if (field.edit && field.edit.required && field.isEmpty(active.draft)) {
-        this.setEditingError('This field is required.', 'required');
-        return false;
-      }
       this.editController?.abort();
       const controller = new AbortController();
       this.editController = controller;
@@ -857,28 +1064,51 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
       let optimisticRow: Row | undefined;
       try {
-        const validation = await field.validate?.(active.draft, row);
-        if (controller.signal.aborted) return false;
+        const value = field.normalize(active.draft, row);
+        if (field.edit && field.edit.required && field.isEmpty(value)) {
+          if (this.editController === controller) this.editController = undefined;
+          this.setEditingError('This field is required.', 'required');
+          return false;
+        }
+        const validation = field.validate
+          ? await raceWithAbort(Promise.resolve(field.validate(value, row)), controller.signal)
+          : undefined;
+        if (validation === abortedOperation) return false;
         if (typeof validation === 'string' && validation) {
+          if (this.editController === controller) this.editController = undefined;
           this.setEditingError(validation, 'validation');
           return false;
         }
+        const rollbackRow = { ...row };
         optimisticRow =
-          editing.optimistic && editing.apply ? editing.apply(row, field, active.draft) : undefined;
+          editing.optimistic && editing.apply ? editing.apply(row, field, value) : undefined;
+        if (optimisticRow === row) {
+          this.editRollback = { key: active.rowKey, row: rollbackRow, optimisticRow };
+          this.rollbackOptimisticEdit();
+          throw new Error('Optimistic editing apply must return a new row object.');
+        }
         if (optimisticRow) {
-          this.editRollback = { key: active.rowKey, row };
+          this.editRollback = { key: active.rowKey, row, optimisticRow };
           this.data.updateRow(active.rowKey, optimisticRow);
         }
-        const result = await editing.save({
-          row,
-          rowKey: active.rowKey,
-          field,
-          previousValue: active.previousValue,
-          value: active.draft,
-          signal: controller.signal,
-          instance: this,
-        });
-        if (controller.signal.aborted) return false;
+        const encodedValue = field.encodeValue(value);
+        if (encodedValue !== undefined && !isGridJsonValue(encodedValue)) {
+          throw new Error(`Encoded value for field "${field.id}" is not JSON-safe.`);
+        }
+        const result = await raceWithAbort(
+          editing.save({
+            row,
+            rowKey: active.rowKey,
+            field,
+            previousValue: active.previousValue,
+            value,
+            encodedValue,
+            signal: controller.signal,
+            instance: this,
+          }),
+          controller.signal,
+        );
+        if (result === abortedOperation) return false;
         let reload = editing.reloadOnSave ?? true;
         if (isEditResult<Row>(result)) {
           if (result.row) this.data.updateRow(active.rowKey, result.row);
@@ -934,6 +1164,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       actionOrId: GridAction<Row> | string,
       input: { row?: Row; field?: GridResolvedField<Row>; value?: unknown } = {},
     ) => {
+      if (this.destroyed) throw new Error('A destroyed GridInstance cannot run actions.');
       const action =
         typeof actionOrId === 'string'
           ? this.definition.actions?.find((item) => item.id === actionOrId)
@@ -964,7 +1195,8 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       );
       const context: GridActionContext<Row> = { ...baseContext, signal: controller.signal };
       try {
-        await action.run(context);
+        const result = await raceWithAbort(Promise.resolve(action.run(context)), controller.signal);
+        if (result === abortedOperation) return;
         if (!controller.signal.aborted && action.refresh) await this.data.reload();
         if (!controller.signal.aborted) {
           this.finishAction(
@@ -988,12 +1220,16 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
         }
       }
     },
-    key: (actionId: string, row?: Row) =>
-      row ? `${actionId}:${String(this.definition.getRowKey(row))}` : actionId,
+    key: (actionId: string, row?: Row) => {
+      if (!row) return stableStringify(['grid-action', actionId]);
+      const rowKey = this.definition.getRowKey(row);
+      return stableStringify(['row-action', actionId, typeof rowKey, rowKey]);
+    },
   };
 
   options = {
     load: async (fieldId: string, search = '', options: { signal?: AbortSignal } = {}) => {
+      if (this.destroyed) throw new Error('A destroyed GridInstance cannot load options.');
       const field = this.definition.fieldMap.get(fieldId);
       if (!field) throw new Error(`Unknown grid field: ${fieldId}`);
       const normalizedSearch = search.trim().toLocaleLowerCase();
@@ -1007,30 +1243,55 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       }
       if (!field.options) return [];
       if (Array.isArray(field.options)) {
+        const items = normalizeGridOptions(field.options, `Options for field "${fieldId}"`);
         return normalizedSearch
-          ? field.options.filter((option) =>
+          ? items.filter((option) =>
               String(option.label).toLocaleLowerCase().includes(normalizedSearch),
             )
-          : field.options;
+          : items;
       }
       const provider =
         typeof field.options === 'function' ? { load: field.options } : field.options;
       const dependency = this.optionDependency(provider.dependsOn);
-      const key = `${fieldId}:${normalizedSearch}:${dependency}`;
+      const key = stableStringify([fieldId, normalizedSearch, dependency]);
       const cached = this.optionCache.get(key);
       const cacheTime = provider.cacheTime ?? 30_000;
-      if (cached?.value && Date.now() - cached.createdAt <= cacheTime) return cached.value;
+      if (cacheTime > 0 && cached?.value && Date.now() - cached.createdAt <= cacheTime) {
+        return cached.value;
+      }
       if (cached?.promise) return this.consumeOptionPromise(key, cached, options.signal);
 
       const controller = new AbortController();
-      const entry: OptionCacheEntry = { controller, consumers: 0, createdAt: Date.now() };
-      const promise = provider
-        .load({ field, query: this.state.query, search, signal: controller.signal })
-        .then((items) => {
-          const value = Array.isArray(items) ? items : [];
-          if (controller.signal.aborted) return [];
+      const sourceGeneration = this.sourceGeneration;
+      const entry: OptionCacheEntry = {
+        fieldId,
+        controller,
+        consumers: 0,
+        createdAt: Date.now(),
+      };
+      let onProviderAbort: (() => void) | undefined;
+      const aborted = new Promise<GridOption[]>((resolve) => {
+        onProviderAbort = () => resolve([]);
+        controller.signal.addEventListener('abort', onProviderAbort, { once: true });
+      });
+      let resolveProvider!: (value: unknown) => void;
+      let rejectProvider!: (error: unknown) => void;
+      const providerResult = new Promise<unknown>((resolve, reject) => {
+        resolveProvider = resolve;
+        rejectProvider = reject;
+      });
+      const loaded = providerResult.then((items) =>
+        normalizeGridOptions(items, `Options for field "${fieldId}"`),
+      );
+      const promise = Promise.race([loaded, aborted])
+        .then((value) => {
+          if (controller.signal.aborted || sourceGeneration !== this.sourceGeneration) return [];
           if (this.optionCache.get(key) === entry) {
-            this.optionCache.set(key, { value, createdAt: Date.now() });
+            if (cacheTime > 0) {
+              this.optionCache.set(key, { fieldId, value, createdAt: Date.now() });
+            } else {
+              this.optionCache.delete(key);
+            }
           }
           this.trimOptionCache();
           return value;
@@ -1039,26 +1300,232 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
           if (this.optionCache.get(key) === entry) this.optionCache.delete(key);
           if (controller.signal.aborted) return [];
           throw error;
+        })
+        .finally(() => {
+          if (onProviderAbort) controller.signal.removeEventListener('abort', onProviderAbort);
         });
       entry.promise = promise;
       this.optionCache.set(key, entry);
+      try {
+        Promise.resolve(
+          provider.load({
+            field,
+            query: this.state.query,
+            search,
+            signal: controller.signal,
+          }),
+        ).then(resolveProvider, rejectProvider);
+      } catch (error) {
+        rejectProvider(error);
+      }
       return this.consumeOptionPromise(key, entry, options.signal);
     },
-    clear: (fieldId?: string) => {
-      [...this.optionCache.entries()].forEach(([key, entry]) => {
-        if (!fieldId || key.startsWith(`${fieldId}:`)) {
-          entry.controller?.abort();
-          this.optionCache.delete(key);
-        }
-      });
-    },
+    clear: (fieldId?: string) => this.clearOptionCache(fieldId),
   };
 
   private isControlled(slice: keyof GridState<Row>): boolean {
-    return Boolean(
-      this.optionsValue.state &&
-      Object.prototype.hasOwnProperty.call(this.optionsValue.state, slice),
+    return this.isSliceControlled(this.optionsValue.state, slice);
+  }
+
+  private reconcileQueryForCapabilities(
+    query: GridQuery,
+    definition: GridResolvedDefinition<Row>,
+    capabilities: GridResolvedCapabilities,
+  ): GridQuery {
+    if (!isPlainRecord(query) || !isPlainRecord(query.filters) || !Array.isArray(query.sorts)) {
+      throw new Error('Grid state query must contain filters and sorts in the grid query format.');
+    }
+
+    let remainingConditions = capabilities.filter.maxConditions;
+    const reconcileGroup = (
+      group: GridFilterGroup,
+      depth: number,
+      root: boolean,
+    ): GridFilterGroup | undefined => {
+      if (
+        !isPlainRecord(group) ||
+        group.type !== 'group' ||
+        !Array.isArray(group.children) ||
+        (group.logic !== 'and' && group.logic !== 'or')
+      ) {
+        throw new Error('Grid state query contains an invalid filter group.');
+      }
+      if (group.negated && !capabilities.filter.negation) {
+        return root ? { ...group, logic: 'and', negated: undefined, children: [] } : undefined;
+      }
+      if (root && capabilities.filter.logic === 'and' && group.logic !== 'and') {
+        return { ...group, logic: 'and', negated: undefined, children: [] };
+      }
+
+      const children: GridFilterGroup['children'] = [];
+      for (const node of group.children) {
+        if (!isPlainRecord(node) || (node.type !== 'condition' && node.type !== 'group')) {
+          throw new Error('Grid state query contains an invalid filter node.');
+        }
+        if (node.type === 'condition') {
+          if (depth + 1 > capabilities.filter.maxDepth || remainingConditions <= 0) continue;
+          const field = definition.fieldMap.get(node.fieldId);
+          if (!field?.filter) continue;
+          if (field.filter.operators && !field.filter.operators.includes(node.operator)) {
+            continue;
+          }
+          if (
+            capabilities.filter.operators &&
+            !capabilities.filter.operators.includes(node.operator)
+          ) {
+            continue;
+          }
+          remainingConditions -= 1;
+          children.push(node);
+          continue;
+        }
+        if (capabilities.filter.logic !== 'nested' || depth + 1 >= capabilities.filter.maxDepth) {
+          continue;
+        }
+        const nested = reconcileGroup(node, depth + 1, false);
+        if (nested?.children.length) children.push(nested);
+      }
+      return children.length === group.children.length &&
+        children.every((node, index) => node === group.children[index])
+        ? group
+        : { ...group, children };
+    };
+
+    const filters = reconcileGroup(query.filters, 0, true) || {
+      ...query.filters,
+      logic: 'and',
+      negated: undefined,
+      children: [],
+    };
+    const sorts = query.sorts
+      .filter((sort) => {
+        if (
+          !isPlainRecord(sort) ||
+          typeof sort.fieldId !== 'string' ||
+          (sort.direction !== 'asc' && sort.direction !== 'desc')
+        ) {
+          throw new Error('Grid state query contains an invalid sort declaration.');
+        }
+        return Boolean(definition.fieldMap.get(sort.fieldId)?.sort);
+      })
+      .slice(0, capabilities.sort.max)
+      .map((sort) => {
+        const field = definition.fieldMap.get(sort.fieldId);
+        return sort.nulls &&
+          (!capabilities.sort.nulls || (field?.sort && field.sort.nulls === false))
+          ? { ...sort, nulls: undefined }
+          : sort;
+      });
+    const keyword = capabilities.search ? query.keyword : '';
+    if (
+      keyword === query.keyword &&
+      filters === query.filters &&
+      shallowArrayEqual(sorts, query.sorts)
+    ) {
+      return query;
+    }
+    return { ...query, keyword, filters, sorts };
+  }
+
+  private validateStateProtocol(
+    state: GridState<Row>,
+    label: string,
+    definition: GridResolvedDefinition<Row>,
+    capabilities: GridResolvedCapabilities,
+  ): void {
+    if (!isPlainRecord(state)) throw new Error(`${label} must be an object.`);
+    validateGridQuery(state.query, definition, capabilities);
+    validateColumnState(state.columns, `${label}.columns`, definition);
+    validateSelectionState(state.selection, `${label}.selection`);
+    validateViewState(state.views, `${label}.views`, definition);
+    validateDataState(state.data, `${label}.data`, definition);
+    if (
+      !isPlainRecord(state.editing) ||
+      typeof state.editing.saving !== 'boolean' ||
+      !isPlainRecord(state.actions) ||
+      !isPlainRecord(state.actions.pending) ||
+      !isPlainRecord(state.actions.errors)
+    ) {
+      throw new Error(`${label} editing/actions slices do not match the grid state protocol.`);
+    }
+  }
+
+  private isSliceControlled(
+    state: Partial<GridState<Row>> | undefined,
+    slice: keyof GridState<Row>,
+  ): boolean {
+    return Boolean(state && Object.prototype.hasOwnProperty.call(state, slice));
+  }
+
+  private getSourceDatasetIdentity(source: GridDataSource<Row>): unknown[] {
+    const datasetKey = source.datasetKey;
+    if (datasetKey !== undefined) return ['dataset', datasetKey];
+    if (source.mode === 'remote') return ['reader', source.read];
+    return ['mode', source.mode];
+  }
+
+  private getPersistenceIdentity(
+    persistence: GridOptions<Row>['persistence'],
+  ): string | GridPersistence<Row> | null {
+    if (!persistence) return null;
+    return persistence.identity !== undefined ? persistence.identity : persistence;
+  }
+
+  private invalidateReadRequest(): void {
+    this.requestController?.abort();
+    this.requestController = undefined;
+    this.requestPromise = undefined;
+    this.activeRequestSignature = undefined;
+    this.requestId += 1;
+  }
+
+  private clearOptionCache(fieldId?: string): void {
+    [...this.optionCache.entries()].forEach(([key, entry]) => {
+      if (fieldId === undefined || entry.fieldId === fieldId) {
+        entry.controller?.abort();
+        this.optionCache.delete(key);
+      }
+    });
+  }
+
+  private rollbackOptimisticState(state: GridState<Row>): GridState<Row> {
+    const rollback = this.editRollback;
+    this.editRollback = undefined;
+    if (!rollback) return state;
+    const index = state.data.rows.findIndex(
+      (row) => this.definition.getRowKey(row) === rollback.key,
     );
+    if (index < 0 || state.data.rows[index] !== rollback.optimisticRow) return state;
+    const rows = [...state.data.rows];
+    rows[index] = rollback.row;
+    if (this.selectedRows.has(rollback.key)) this.selectedRows.set(rollback.key, rollback.row);
+    this.requestCache.clear();
+    return { ...state, data: { ...state.data, rows } };
+  }
+
+  private invalidateSourceWork(): void {
+    this.sourceGeneration += 1;
+    this.invalidateReadRequest();
+    this.editController?.abort();
+    this.editController = undefined;
+    this.actionControllers.forEach((controller) => controller.abort());
+    this.actionControllers.clear();
+    this.clearOptionCache();
+    this.selectedRows.clear();
+
+    const rolledBack = this.rollbackOptimisticState(this.internalState);
+    const pending = Object.fromEntries(
+      Object.keys(rolledBack.actions.pending).map((key) => [key, false]),
+    );
+    this.internalState = {
+      ...rolledBack,
+      selection: this.isControlled('selection')
+        ? rolledBack.selection
+        : { mode: 'explicit', selectedKeys: [] },
+      editing: { saving: false },
+      actions: { ...rolledBack.actions, pending },
+    };
+    this.state = mergeControlledState(this.internalState, this.optionsValue.state);
   }
 
   private consumeOptionPromise(
@@ -1114,9 +1581,10 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   }
 
   private rollbackOptimisticEdit(): void {
-    const rollback = this.editRollback;
-    this.editRollback = undefined;
-    if (rollback) this.data.updateRow(rollback.key, rollback.row);
+    const next = this.rollbackOptimisticState(this.internalState);
+    if (next !== this.internalState) {
+      this.commit(next, createGridEvent('editing.rollback', 'system'));
+    }
   }
 
   private cancelEditing(reason: GridEventReason): void {
@@ -1140,6 +1608,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     event: GridEvent,
     requestReason: GridRequestReason = 'query',
   ): void {
+    if (this.destroyed) return;
     validateGridQuery(query, this.definition, this.capabilities);
     const previousInternalQuery = this.internalState.query;
     const acceptedQueryChange = !this.isControlled('query') && query !== this.state.query;
@@ -1176,19 +1645,34 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   }
 
   private setColumns(columns: GridColumnState, event: GridEvent): void {
+    if (this.destroyed) return;
+    validateColumnState(columns, 'Grid columns', this.definition);
     const previousRequest = this.compileRequest(this.state.query, this.state.columns);
+    const previousIntentRequest = this.compileRequest(
+      this.internalState.query,
+      this.internalState.columns,
+    );
+    const nextIntentRequest = this.compileRequest(this.internalState.query, columns);
     const next = this.withViewDirty({ ...this.internalState, columns });
     const previousColumns = this.state.columns;
     this.commit(next, event, true);
-    if (this.state.columns !== previousColumns && this.capabilities.projection) {
-      const nextRequest = this.compileRequest(this.state.query, this.state.columns);
-      if (getRequestSignature(previousRequest) !== getRequestSignature(nextRequest)) {
+    if (!this.capabilities.projection) return;
+    const intentChanged =
+      getRequestSignature(previousIntentRequest) !== getRequestSignature(nextIntentRequest);
+    if (this.optionsValue.source.mode === 'controlled') {
+      if (intentChanged) this.notifyControlledQuery(event, this.internalState.query, columns);
+      return;
+    }
+    if (this.state.columns !== previousColumns) {
+      const acceptedRequest = this.compileRequest(this.state.query, this.state.columns);
+      if (getRequestSignature(previousRequest) !== getRequestSignature(acceptedRequest)) {
         this.queueLoad(false, 'projection');
       }
     }
   }
 
   private setSelection(selection: GridSelectionState): void {
+    validateSelectionState(selection, 'Grid selection');
     this.commit({ ...this.internalState, selection }, createGridEvent('selection.change', 'user'));
   }
 
@@ -1254,6 +1738,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     this.pendingState = undefined;
     this.pendingPersist = false;
     this.pendingLoad = undefined;
+    if (this.destroyed) return;
     if (changed) this.listeners.forEach((listener) => listener());
     if (event) {
       this.eventListeners.forEach((listener) => listener(event));
@@ -1282,17 +1767,24 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     return compileGridQuery(requestQuery, this.definition);
   }
 
-  private visibleFieldIds(columns: GridColumnState, explicit?: string[]): string[] {
+  private visibleFieldIds(
+    columns: GridColumnState,
+    explicit?: string[],
+    definition: GridResolvedDefinition<Row> = this.definition,
+  ): string[] {
     if (explicit !== undefined) return explicit;
     const hidden = new Set(columns.hidden);
     return columns.order
       .filter((id) => !hidden.has(id))
-      .map((id) => this.definition.columnMap.get(id)?.fieldId)
+      .map((id) => definition.columnMap.get(id)?.fieldId)
       .filter((id): id is string => Boolean(id));
   }
 
   private requestScope(query = this.state.query, columns = this.state.columns): string {
-    return getRequestScopeSignature(this.compileRequest(query, columns));
+    return stableStringify([
+      this.getSourceDatasetIdentity(this.optionsValue.source),
+      getRequestScopeSignature(this.compileRequest(query, columns)),
+    ]);
   }
 
   private viewQuerySignature(query: GridQuery, columns: GridColumnState): string {
@@ -1308,7 +1800,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
     if (source.mode === 'local') {
       try {
-        const result = applyLocalGridQuery(source.rows, query, this.definition);
+        const result = applyLocalGridQuery(
+          source.rows,
+          query,
+          this.definition,
+          this.optionsValue.temporal,
+        );
         if (this.correctOutOfRangePage(result)) return;
         this.applyResult(result, undefined, reason);
       } catch (error) {
@@ -1338,6 +1835,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     const controller = new AbortController();
     this.requestController = controller;
     const requestId = ++this.requestId;
+    const sourceGeneration = this.sourceGeneration;
     this.activeRequestSignature = signature;
     if (cached) {
       this.applyResult(cached.result, { fetching: true, requestId }, reason);
@@ -1361,24 +1859,41 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
     const promise = (async () => {
       try {
-        const result = normalizeGridResult(
-          await source.read({
-            query,
-            request,
-            fields: this.definition.fields,
-            signal: controller.signal,
-            requestId,
-            reason,
+        const input = await raceWithAbort(
+          Promise.resolve().then<GridReadResult<Row> | typeof abortedOperation>(() => {
+            if (controller.signal.aborted) return abortedOperation;
+            return source.read({
+              query,
+              request,
+              fields: this.definition.fields,
+              signal: controller.signal,
+              requestId,
+              reason,
+            });
           }),
-          query.pagination,
+          controller.signal,
         );
-        if (controller.signal.aborted || requestId !== this.requestId || this.destroyed) return;
+        if (input === abortedOperation) return;
+        const result = normalizeGridResult(input, query.pagination);
+        if (
+          controller.signal.aborted ||
+          requestId !== this.requestId ||
+          sourceGeneration !== this.sourceGeneration ||
+          this.destroyed
+        )
+          return;
         this.validateRows(result.rows);
         if (this.correctOutOfRangePage(result)) return;
         this.writeCache(source, signature, result);
         this.applyResult(result, { requestId }, reason);
       } catch (error) {
-        if (controller.signal.aborted || requestId !== this.requestId || this.destroyed) return;
+        if (
+          controller.signal.aborted ||
+          requestId !== this.requestId ||
+          sourceGeneration !== this.sourceGeneration ||
+          this.destroyed
+        )
+          return;
         this.applyRequestError(normalizeError(error), reason, requestId);
       } finally {
         if (requestId === this.requestId) {
@@ -1398,9 +1913,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   ): void {
     const result = this.normalizeFacets(normalizeGridResult(input, this.state.query.pagination));
     this.validateRows(result.rows);
+    const selection = this.reconcileSelection(result);
     this.commit(
       {
         ...this.internalState,
+        selection,
         data: {
           ...result,
           status: 'success',
@@ -1432,11 +1949,12 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   }
 
   private validateRows(rows: readonly Row[]): void {
-    const keys = new Set<GridRowKey>();
+    const keys = new Set<string>();
     rows.forEach((row) => {
       const key = this.definition.getRowKey(row);
-      if (keys.has(key)) throw new Error(`Duplicate row key in grid result: ${String(key)}`);
-      keys.add(key);
+      const signature = String(key);
+      if (keys.has(signature)) throw new Error(`Duplicate row key in grid result: ${signature}`);
+      keys.add(signature);
     });
   }
 
@@ -1464,11 +1982,56 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
     return { ...result, facets };
   }
 
+  private reconcileSelection(result: GridReadResult<Row>): GridSelectionState {
+    const selection = this.state.selection;
+    if (selection.mode === 'explicit') {
+      const selected = new Set(selection.selectedKeys);
+      result.rows.forEach((row) => {
+        const key = this.definition.getRowKey(row);
+        if (selected.has(key)) this.selectedRows.set(key, row);
+      });
+
+      const source = this.optionsValue.source;
+      if (source.mode !== 'local') return selection;
+      const available = new Set(source.rows.map(this.definition.getRowKey));
+      [...this.selectedRows.keys()].forEach((key) => {
+        if (!available.has(key)) this.selectedRows.delete(key);
+      });
+      if (this.isControlled('selection')) return selection;
+      const selectedKeys = selection.selectedKeys.filter((key) => available.has(key));
+      return shallowArrayEqual(selectedKeys, selection.selectedKeys)
+        ? selection
+        : { mode: 'explicit', selectedKeys };
+    }
+
+    this.selectedRows.clear();
+    const exactTotal =
+      result.total && (!result.total.accuracy || result.total.accuracy === 'exact')
+        ? result.total.value
+        : undefined;
+    const currentSignature = this.requestScope();
+    if (selection.querySignature !== currentSignature || exactTotal === undefined) {
+      return this.isControlled('selection') ? selection : { mode: 'explicit', selectedKeys: [] };
+    }
+
+    let excludedKeys = uniqueRowKeys(selection.excludedKeys);
+    const source = this.optionsValue.source;
+    if (source.mode === 'local') {
+      const available = new Set(source.rows.map(this.definition.getRowKey));
+      excludedKeys = excludedKeys.filter((key) => available.has(key));
+    }
+    if (this.isControlled('selection')) return selection;
+    return exactTotal === selection.total && shallowArrayEqual(excludedKeys, selection.excludedKeys)
+      ? selection
+      : { ...selection, total: exactTotal, excludedKeys };
+  }
+
   private notifyControlledQuery(
     event: GridEvent,
     query = this.state.query,
     columns = this.state.columns,
   ): void {
+    if (this.destroyed) return;
     const source = this.optionsValue.source;
     if (source.mode === 'controlled') {
       source.onQueryChange?.(query, this.compileRequest(query, columns), event);
@@ -1496,6 +2059,7 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       error,
       updatedAt: error || source.loading ? this.state.data.updatedAt : Date.now(),
     };
+    const selection = this.reconcileSelection(result);
     const current = this.state.data;
     const same =
       current.rows === data.rows &&
@@ -1507,8 +2071,11 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
       current.status === data.status &&
       current.fetching === data.fetching &&
       current.error?.message === data.error?.message;
-    if (same) return;
-    this.commit({ ...this.internalState, data }, createGridEvent('data.controlled.sync', 'source'));
+    if (same && selection === this.state.selection) return;
+    this.commit(
+      { ...this.internalState, selection, data },
+      createGridEvent('data.controlled.sync', 'source'),
+    );
   }
 
   private readCache(
@@ -1544,17 +2111,23 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
 
   private optionDependency(dependsOn: 'query' | string[] | undefined): string {
     if (!dependsOn) return '';
-    if (dependsOn === 'query') return this.requestScope();
+    if (dependsOn === 'query') return stableStringify(this.state.query);
     const fields = new Set(dependsOn);
-    const values: unknown[] = [];
-    const visit = (group: GridFilterGroup) => {
-      group.children.forEach((node) => {
-        if (node.type === 'group') visit(node);
-        else if (fields.has(node.fieldId)) values.push([node.fieldId, node.operator, node.value]);
+    const project = (group: GridFilterGroup): unknown => {
+      const children = group.children.flatMap((node) => {
+        if (node.type === 'condition') {
+          return fields.has(node.fieldId)
+            ? [[node.fieldId, node.operator, node.value] as unknown]
+            : [];
+        }
+        const nested = project(node) as { children: unknown[] } | undefined;
+        return nested?.children.length ? [nested] : [];
       });
+      return children.length
+        ? { logic: group.logic, negated: Boolean(group.negated), children }
+        : undefined;
     };
-    visit(this.state.query.filters);
-    return stableStringify(values);
+    return stableStringify(project(this.state.query.filters));
   }
 
   private trimOptionCache(): void {
@@ -1615,86 +2188,411 @@ export class GridStore<Row extends object> implements GridInstance<Row> {
   private schedulePersistence(): void {
     if (!this.optionsValue.persistence || this.destroyed) return;
     if (this.persistenceTimer) clearTimeout(this.persistenceTimer);
+    const generation = this.persistenceGeneration;
     this.persistenceTimer = setTimeout(() => {
       this.persistenceTimer = undefined;
-      void this.persist();
+      if (generation === this.persistenceGeneration) void this.persist();
     }, 250);
   }
 
-  private restorePersistenceOnce(): Promise<void> {
-    if (this.persistenceRestored) return Promise.resolve();
-    if (this.persistencePromise) return this.persistencePromise;
-    this.persistencePromise = this.restorePersistence().finally(() => {
-      this.persistenceRestored = true;
-      this.persistencePromise = undefined;
+  private createPersistedState(
+    state: GridState<Row>,
+    definition: GridResolvedDefinition<Row>,
+  ): GridPersistedState {
+    return {
+      protocol: 'huiyun.data-grid/preferences/v1',
+      gridId: definition.id,
+      revision: definition.revision,
+      columns: cloneColumnState(state.columns),
+      views: cloneJson(state.views.items),
+      activeViewId: state.views.activeId,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private enqueuePersistenceSave(
+    persistence: GridPersistence<Row>,
+    state: GridPersistedState,
+    definition: GridResolvedDefinition<Row>,
+  ): Promise<void> {
+    const identity = this.getPersistenceIdentity(persistence);
+    const previous = this.persistenceSaveChains.get(identity) || Promise.resolve();
+    const next = previous.then(async () => {
+      try {
+        await persistence.save(definition.id, state, { definition });
+      } catch (error) {
+        const normalized = normalizeError(error, 'Unable to save grid preferences.');
+        this.reportError(normalized, createGridEvent('persistence.save.error', 'source'));
+      }
     });
-    return this.persistencePromise;
+    const tracked = next.finally(() => {
+      if (this.persistenceSaveChains.get(identity) === tracked) {
+        this.persistenceSaveChains.delete(identity);
+      }
+    });
+    this.persistenceSaveChains.set(identity, tracked);
+    return tracked;
+  }
+
+  private flushPendingPersistence(
+    persistence: GridOptions<Row>['persistence'],
+    state: GridState<Row>,
+    definition: GridResolvedDefinition<Row>,
+  ): void {
+    if (!this.persistenceTimer) return;
+    clearTimeout(this.persistenceTimer);
+    this.persistenceTimer = undefined;
+    if (persistence) {
+      void this.enqueuePersistenceSave(
+        persistence,
+        this.createPersistedState(state, definition),
+        definition,
+      );
+    }
+  }
+
+  private restorePersistenceOnce(): Promise<boolean> {
+    if (this.persistenceRestored) return Promise.resolve(false);
+    if (this.persistencePromise) return this.persistencePromise;
+    const persistence = this.optionsValue.persistence;
+    if (!persistence) {
+      this.persistenceRestored = true;
+      return Promise.resolve(false);
+    }
+    const generation = this.persistenceGeneration;
+    const promise = this.restorePersistence(persistence, generation).then((requestChanged) => {
+      if (
+        generation === this.persistenceGeneration &&
+        this.getPersistenceIdentity(this.optionsValue.persistence) === this.persistenceIdentity &&
+        this.started &&
+        !this.destroyed
+      ) {
+        this.persistenceRestored = true;
+        return requestChanged;
+      }
+      return false;
+    });
+    const tracked = promise.finally(() => {
+      if (this.persistencePromise === tracked) this.persistencePromise = undefined;
+    });
+    this.persistencePromise = tracked;
+    return tracked;
   }
 
   private async persist(): Promise<void> {
     const persistence = this.optionsValue.persistence;
     if (!persistence) return;
-    const state: GridPersistedState = {
-      protocol: 'huiyun.data-grid/preferences/v1',
-      gridId: this.definition.id,
-      revision: this.definition.revision,
-      columns: this.state.columns,
-      views: this.state.views.items,
-      activeViewId: this.state.views.activeId,
-      updatedAt: new Date().toISOString(),
-    };
-    try {
-      await persistence.save(this.definition.id, state, { definition: this.definition });
-    } catch (error) {
-      const normalized = normalizeError(error, 'Unable to save grid preferences.');
-      this.reportError(normalized, createGridEvent('persistence.save.error', 'source'));
-    }
+    const definition = this.definition;
+    await this.enqueuePersistenceSave(
+      persistence,
+      this.createPersistedState(this.state, definition),
+      definition,
+    );
   }
 
-  private async restorePersistence(): Promise<void> {
-    const persistence = this.optionsValue.persistence;
-    if (!persistence) return;
+  private async restorePersistence(
+    persistence: GridPersistence<Row>,
+    generation: number,
+  ): Promise<boolean> {
+    const definition = this.definition;
+    const sessionIsCurrent = () =>
+      generation === this.persistenceGeneration &&
+      this.getPersistenceIdentity(this.optionsValue.persistence) === this.persistenceIdentity &&
+      this.started &&
+      !this.destroyed;
     try {
-      let persisted = await persistence.load(this.definition.id, { definition: this.definition });
-      if (!persisted) return;
+      const loaded = await persistence.load(definition.id, { definition });
+      if (!sessionIsCurrent() || !loaded) return false;
+      let persisted: GridPersistedState | null = parseGridPersistedState(loaded);
       if (
         persisted.protocol !== 'huiyun.data-grid/preferences/v1' ||
-        persisted.gridId !== this.definition.id
+        persisted.gridId !== definition.id
       ) {
-        return;
+        return false;
       }
-      if (persisted.revision !== this.definition.revision) {
-        persisted = persistence.migrate
-          ? await persistence.migrate(persisted, { definition: this.definition })
+      if (persisted.revision !== definition.revision) {
+        const migrated = persistence.migrate
+          ? await persistence.migrate(persisted, { definition })
           : null;
+        persisted = migrated ? parseGridPersistedState(migrated) : null;
       }
-      if (!persisted) return;
-      const columns = this.reconcileColumns(persisted.columns);
-      const next = {
+      if (!sessionIsCurrent() || !persisted) return false;
+      if (
+        persisted.protocol !== 'huiyun.data-grid/preferences/v1' ||
+        persisted.gridId !== definition.id ||
+        persisted.revision !== definition.revision
+      ) {
+        throw new Error('Migrated grid preferences do not match the current grid revision.');
+      }
+
+      const active = persisted.activeViewId
+        ? persisted.views.find((view) => view.id === persisted.activeViewId)
+        : undefined;
+      const columns = this.reconcileColumns(active?.columns || persisted.columns);
+      const pagination = this.resetPagination(this.state.query.pagination);
+      const query: GridQuery = active
+        ? { ...cloneJson(active.query), pagination }
+        : this.state.query;
+      validateGridQuery(query, definition, this.capabilities);
+      const previousRequest = getRequestSignature(this.compileRequest());
+      const previousScope = this.requestScope();
+      const nextScope = this.requestScope(query, columns);
+      if (previousScope !== nextScope) this.selectedRows.clear();
+      const next: GridState<Row> = {
         ...this.internalState,
+        query,
         columns,
+        selection:
+          previousScope !== nextScope && !this.isControlled('selection')
+            ? { mode: 'explicit', selectedKeys: [] }
+            : this.internalState.selection,
         views: {
-          activeId: persisted.views.some((view) => view.id === persisted.activeViewId)
-            ? persisted.activeViewId
-            : undefined,
-          items: persisted.views || [],
+          activeId: active?.id,
+          items: persisted.views,
           dirty: false,
         },
       };
       this.commit(next, createGridEvent('persistence.restore', 'restore'));
+      return previousRequest !== getRequestSignature(this.compileRequest());
     } catch (error) {
+      if (!sessionIsCurrent()) return false;
       const normalized = normalizeError(error, 'Unable to restore grid preferences.');
       this.reportError(normalized, createGridEvent('persistence.load.error', 'source'));
+      return false;
     }
   }
 
   private reportError(error: Error, event: GridEvent): void {
+    if (this.destroyed) return;
     this.optionsValue.onError?.(error, event);
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.getOwnPropertySymbols(value).length === 0
+  );
+}
+
+function validateStateContainer(value: unknown, label: string): void {
+  if (value === undefined) return;
+  if (!isPlainRecord(value)) throw new Error(`${label} must be an object.`);
+  for (const slice of ['query', 'columns', 'selection', 'data', 'views', 'editing', 'actions']) {
+    if (Object.prototype.hasOwnProperty.call(value, slice) && !isPlainRecord(value[slice])) {
+      throw new Error(`${label}.${slice} must be an object.`);
+    }
+  }
+}
+
+function validateColumnState<Row extends object>(
+  value: unknown,
+  label: string,
+  definition: GridResolvedDefinition<Row>,
+): asserts value is GridColumnState {
+  if (!isPlainRecord(value)) throw new Error(`${label} must be an object.`);
+  const known = new Set(
+    [...definition.columnMap.values()]
+      .filter((column) => !column.children?.length)
+      .map((column) => column.id),
+  );
+  for (const key of ['order', 'hidden'] as const) {
+    const ids = value[key];
+    if (
+      !Array.isArray(ids) ||
+      ids.some((id) => typeof id !== 'string' || !known.has(id)) ||
+      new Set(ids).size !== ids.length
+    ) {
+      throw new Error(`${label}.${key} must contain unique known leaf column ids.`);
+    }
+  }
+  if (!isPlainRecord(value.widths) || !isPlainRecord(value.pinned)) {
+    throw new Error(`${label} widths and pinned values must be objects.`);
+  }
+  if (
+    Object.entries(value.widths).some(
+      ([id, width]) =>
+        !known.has(id) || typeof width !== 'number' || !Number.isFinite(width) || width <= 0,
+    )
+  ) {
+    throw new Error(`${label}.widths contains an invalid column width.`);
+  }
+  if (
+    Object.entries(value.pinned).some(
+      ([id, pinned]) =>
+        !known.has(id) || (pinned !== null && pinned !== 'left' && pinned !== 'right'),
+    )
+  ) {
+    throw new Error(`${label}.pinned contains an invalid pinned column.`);
+  }
+  if (!['compact', 'default', 'comfortable'].includes(String(value.density))) {
+    throw new Error(`${label}.density is invalid.`);
+  }
+}
+
+function validateRowKeys<Row extends object>(
+  rows: readonly Row[],
+  label: string,
+  definition: GridResolvedDefinition<Row>,
+): void {
+  const keys = new Set<string>();
+  rows.forEach((row, index) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      throw new Error(`${label}[${index}] must be a row object.`);
+    }
+    const signature = String(definition.getRowKey(row));
+    if (keys.has(signature)) throw new Error(`${label} contains duplicate row key ${signature}.`);
+    keys.add(signature);
+  });
+}
+
+function validateKeyList(value: unknown, label: string): asserts value is GridRowKey[] {
+  if (!Array.isArray(value) || value.some((key) => !isValidGridRowKey(key))) {
+    throw new Error(`${label} must contain valid row keys.`);
+  }
+  const signatures = value.map((key) => `${typeof key}:${String(key)}`);
+  if (new Set(signatures).size !== signatures.length) {
+    throw new Error(`${label} cannot contain duplicate row keys.`);
+  }
+}
+
+function validateSelectionState(
+  value: unknown,
+  label: string,
+): asserts value is GridSelectionState {
+  if (!isPlainRecord(value)) throw new Error(`${label} must be an object.`);
+  if (value.mode === 'explicit') {
+    validateKeyList(value.selectedKeys, `${label}.selectedKeys`);
+    return;
+  }
+  if (value.mode !== 'allMatching') throw new Error(`${label}.mode is invalid.`);
+  validateKeyList(value.excludedKeys, `${label}.excludedKeys`);
+  if (
+    typeof value.querySignature !== 'string' ||
+    !value.querySignature ||
+    !Number.isSafeInteger(value.total) ||
+    (value.total as number) < 0 ||
+    (value.excludedKeys as GridRowKey[]).length > (value.total as number)
+  ) {
+    throw new Error(`${label} all-matching metadata is invalid.`);
+  }
+}
+
+function validateFilterShape(value: unknown, ids: Set<string>, root = false): void {
+  if (!isPlainRecord(value) || typeof value.id !== 'string' || !value.id || ids.has(value.id)) {
+    throw new Error('Grid view query contains invalid or duplicate filter ids.');
+  }
+  ids.add(value.id);
+  if (value.type === 'condition') {
+    if (
+      root ||
+      typeof value.fieldId !== 'string' ||
+      !value.fieldId ||
+      typeof value.operator !== 'string' ||
+      !value.operator ||
+      (value.value !== undefined && !isGridJsonValue(value.value))
+    ) {
+      throw new Error('Grid view query contains an invalid filter condition.');
+    }
+    return;
+  }
+  if (
+    value.type !== 'group' ||
+    (value.logic !== 'and' && value.logic !== 'or') ||
+    (value.negated !== undefined && typeof value.negated !== 'boolean') ||
+    !Array.isArray(value.children)
+  ) {
+    throw new Error('Grid view query contains an invalid filter group.');
+  }
+  value.children.forEach((child) => validateFilterShape(child, ids));
+}
+
+function validateViewState<Row extends object>(
+  value: unknown,
+  label: string,
+  definition: GridResolvedDefinition<Row>,
+): void {
+  if (
+    !isPlainRecord(value) ||
+    !Array.isArray(value.items) ||
+    typeof value.dirty !== 'boolean' ||
+    (value.activeId !== undefined && (typeof value.activeId !== 'string' || !value.activeId))
+  ) {
+    throw new Error(`${label} does not match the grid view state protocol.`);
+  }
+  const ids = new Set<string>();
+  value.items.forEach((view, index) => {
+    if (
+      !isPlainRecord(view) ||
+      typeof view.id !== 'string' ||
+      !view.id ||
+      ids.has(view.id) ||
+      typeof view.name !== 'string' ||
+      !view.name.trim() ||
+      !isPlainRecord(view.query)
+    ) {
+      throw new Error(`${label}.items[${index}] is invalid.`);
+    }
+    ids.add(view.id);
+    const query = view.query;
+    if (typeof query.keyword !== 'string' || !Array.isArray(query.sorts)) {
+      throw new Error(`${label}.items[${index}].query is invalid.`);
+    }
+    validateFilterShape(query.filters, new Set(), true);
+    validateColumnState(view.columns, `${label}.items[${index}].columns`, definition);
+  });
+  if (value.activeId !== undefined && !ids.has(value.activeId)) {
+    throw new Error(`${label}.activeId must reference an existing view.`);
+  }
+}
+
+function validateDataState<Row extends object>(
+  value: unknown,
+  label: string,
+  definition: GridResolvedDefinition<Row>,
+): void {
+  if (
+    !isPlainRecord(value) ||
+    !['idle', 'loading', 'success', 'error'].includes(String(value.status)) ||
+    typeof value.fetching !== 'boolean' ||
+    !Array.isArray(value.rows) ||
+    !Array.isArray(value.summary) ||
+    !isPlainRecord(value.facets) ||
+    !Array.isArray(value.warnings)
+  ) {
+    throw new Error(`${label} does not match the grid data state protocol.`);
+  }
+  validateRowKeys(value.rows as Row[], `${label}.rows`, definition);
+  Object.entries(value.facets).forEach(([fieldId, options]) => {
+    normalizeGridOptions(options, `${label}.facets.${fieldId}`);
+  });
+  if (value.total !== undefined) {
+    if (
+      !isPlainRecord(value.total) ||
+      !Number.isSafeInteger(value.total.value) ||
+      (value.total.value as number) < 0 ||
+      (value.total.accuracy !== undefined &&
+        !['exact', 'estimated', 'atLeast'].includes(String(value.total.accuracy)))
+    ) {
+      throw new Error(`${label}.total is invalid.`);
+    }
+  }
+  if (value.error !== undefined && !(value.error instanceof Error)) {
+    throw new Error(`${label}.error must be an Error.`);
   }
 }
 
 function uniqueRowKeys(values: readonly GridRowKey[]): GridRowKey[] {
   return [...new Set(values)];
+}
+
+function isValidGridRowKey(value: unknown): value is GridRowKey {
+  return (
+    (typeof value === 'string' && value.length > 0) ||
+    (typeof value === 'number' && Number.isSafeInteger(value))
+  );
 }
 
 export function createGrid<Row extends object>(options: GridOptions<Row>): GridInstance<Row> {

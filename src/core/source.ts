@@ -3,6 +3,7 @@ import type {
   GridControlledSource,
   GridDataSource,
   GridLocalSource,
+  GridOption,
   GridPagination,
   GridReadResult,
   GridRemoteSource,
@@ -21,11 +22,37 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function isGridOptionValue(value: unknown): boolean {
   return (
-    value === null ||
     typeof value === 'string' ||
     typeof value === 'boolean' ||
     (typeof value === 'number' && Number.isFinite(value))
   );
+}
+
+export function normalizeGridOptions(input: unknown, label = 'Grid options'): GridOption[] {
+  if (!Array.isArray(input)) throw new Error(`${label} must be an array.`);
+  const values = new Set<string>();
+  return input.map((item, index) => {
+    if (!isPlainRecord(item)) throw new Error(`${label} option ${index} must be an object.`);
+    if (!Object.prototype.hasOwnProperty.call(item, 'label') || item.label == null) {
+      throw new Error(`${label} option ${index} requires a label.`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(item, 'value') || !isGridOptionValue(item.value)) {
+      throw new Error(`${label} option ${index} has an invalid value.`);
+    }
+    const valueKey = `${typeof item.value}:${String(item.value)}`;
+    if (values.has(valueKey)) throw new Error(`${label} contains duplicate option values.`);
+    values.add(valueKey);
+    if (item.color !== undefined && typeof item.color !== 'string') {
+      throw new Error(`${label} option ${index} has an invalid color.`);
+    }
+    if (item.disabled !== undefined && typeof item.disabled !== 'boolean') {
+      throw new Error(`${label} option ${index} has invalid disabled state.`);
+    }
+    if (item.meta !== undefined && !isPlainRecord(item.meta)) {
+      throw new Error(`${label} option ${index} has invalid meta.`);
+    }
+    return { ...item } as unknown as GridOption;
+  });
 }
 
 function validateSummary(summary: unknown[]): void {
@@ -68,38 +95,7 @@ function validateSummary(summary: unknown[]): void {
 function validateFacets(facets: Record<string, unknown>): void {
   Object.entries(facets).forEach(([field, options]) => {
     if (!field.trim()) throw new Error('Grid result facet keys cannot be empty.');
-    if (!Array.isArray(options)) {
-      throw new Error(`Grid result facet "${field}" must be an array.`);
-    }
-    const values = new Set<string>();
-    options.forEach((option, index) => {
-      if (!isPlainRecord(option)) {
-        throw new Error(`Grid result facet "${field}" option ${index} must be an object.`);
-      }
-      if (!Object.prototype.hasOwnProperty.call(option, 'label') || option.label == null) {
-        throw new Error(`Grid result facet "${field}" option ${index} requires a label.`);
-      }
-      if (
-        !Object.prototype.hasOwnProperty.call(option, 'value') ||
-        !isGridOptionValue(option.value)
-      ) {
-        throw new Error(`Grid result facet "${field}" option ${index} has an invalid value.`);
-      }
-      const valueKey = `${typeof option.value}:${String(option.value)}`;
-      if (values.has(valueKey)) {
-        throw new Error(`Grid result facet "${field}" contains duplicate option values.`);
-      }
-      values.add(valueKey);
-      if (option.color !== undefined && typeof option.color !== 'string') {
-        throw new Error(`Grid result facet "${field}" option ${index} has an invalid color.`);
-      }
-      if (option.disabled !== undefined && typeof option.disabled !== 'boolean') {
-        throw new Error(`Grid result facet "${field}" option ${index} has invalid disabled state.`);
-      }
-      if (option.meta !== undefined && !isPlainRecord(option.meta)) {
-        throw new Error(`Grid result facet "${field}" option ${index} has invalid meta.`);
-      }
-    });
+    normalizeGridOptions(options, `Grid result facet "${field}"`);
   });
 }
 
@@ -135,11 +131,120 @@ const localDefaults: GridResolvedCapabilities = {
   selectAllMatching: true,
 };
 
+function validateCapabilities(input: unknown): asserts input is GridCapabilities | undefined {
+  if (input === undefined) return;
+  if (!isPlainRecord(input)) throw new Error('Grid source capabilities must be an object.');
+  if (input.pagination !== undefined && !['offset', 'cursor'].includes(String(input.pagination))) {
+    throw new Error(`Unknown grid pagination capability: ${String(input.pagination)}`);
+  }
+  ['search', 'projection', 'summary', 'facets', 'selectAllMatching'].forEach((key) => {
+    if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+      throw new Error(`Grid capability "${key}" must be a boolean.`);
+    }
+  });
+  if (input.filter !== undefined) {
+    if (!isPlainRecord(input.filter)) throw new Error('Grid filter capability must be an object.');
+    if (
+      input.filter.logic !== undefined &&
+      !['and', 'flat', 'nested'].includes(String(input.filter.logic))
+    ) {
+      throw new Error(`Unknown grid filter logic: ${String(input.filter.logic)}`);
+    }
+    if (input.filter.negation !== undefined && typeof input.filter.negation !== 'boolean') {
+      throw new Error('Grid filter negation capability must be a boolean.');
+    }
+    for (const [key, minimum] of [
+      ['maxDepth', 1],
+      ['maxConditions', 0],
+    ] as const) {
+      const value = input.filter[key];
+      if (value !== undefined && (!Number.isSafeInteger(value) || (value as number) < minimum)) {
+        throw new Error(`Grid filter ${key} must be a safe integer >= ${minimum}.`);
+      }
+    }
+    if (input.filter.operators !== undefined) {
+      if (
+        !Array.isArray(input.filter.operators) ||
+        input.filter.operators.some((operator) => typeof operator !== 'string' || !operator.trim())
+      ) {
+        throw new Error('Grid filter operators must be non-empty strings.');
+      }
+      if (new Set(input.filter.operators).size !== input.filter.operators.length) {
+        throw new Error('Grid filter operators cannot contain duplicates.');
+      }
+    }
+  }
+  if (input.sort !== undefined) {
+    if (!isPlainRecord(input.sort)) throw new Error('Grid sort capability must be an object.');
+    if (
+      input.sort.max !== undefined &&
+      (!Number.isSafeInteger(input.sort.max) || (input.sort.max as number) < 0)
+    ) {
+      throw new Error('Grid sort max must be a non-negative safe integer.');
+    }
+    if (input.sort.nulls !== undefined && typeof input.sort.nulls !== 'boolean') {
+      throw new Error('Grid sort null capability must be a boolean.');
+    }
+  }
+}
+
 export function resolveGridCapabilities<Row extends object>(
   source: GridDataSource<Row>,
 ): GridResolvedCapabilities {
+  if (!source || !['local', 'remote', 'controlled'].includes(String(source.mode))) {
+    throw new Error(
+      `Unknown grid source mode: ${String(source && (source as { mode?: unknown }).mode)}`,
+    );
+  }
+  if (
+    source.datasetKey !== undefined &&
+    (typeof source.datasetKey !== 'string' || !source.datasetKey.trim())
+  ) {
+    throw new Error('Grid source datasetKey must be a non-empty string.');
+  }
+  if (source.mode === 'remote') {
+    if (typeof source.read !== 'function') {
+      throw new Error('Remote grid sources require a read function.');
+    }
+    if (source.policy !== undefined) {
+      if (!isPlainRecord(source.policy)) throw new Error('Grid source policy must be an object.');
+      for (const key of ['cacheTime', 'staleTime', 'maxCacheEntries'] as const) {
+        const value = source.policy[key];
+        if (
+          value !== undefined &&
+          (!Number.isSafeInteger(value) || value < (key === 'maxCacheEntries' ? 1 : 0))
+        ) {
+          throw new Error(`Grid source policy.${key} has an invalid value.`);
+        }
+      }
+      if (
+        source.policy.keepPreviousData !== undefined &&
+        typeof source.policy.keepPreviousData !== 'boolean'
+      ) {
+        throw new Error('Grid source policy.keepPreviousData must be a boolean.');
+      }
+    }
+  } else if (source.mode === 'local') {
+    if (!Array.isArray(source.rows)) throw new Error('Local grid source rows must be an array.');
+    if (source.rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) {
+      throw new Error('Every local grid source row must be an object.');
+    }
+  } else {
+    if (!isPlainRecord(source.result)) {
+      throw new Error('Controlled grid sources require a result object.');
+    }
+    for (const key of ['loading', 'refreshing'] as const) {
+      if (source[key] !== undefined && typeof source[key] !== 'boolean') {
+        throw new Error(`Controlled grid source ${key} must be a boolean.`);
+      }
+    }
+    if (source.onQueryChange !== undefined && typeof source.onQueryChange !== 'function') {
+      throw new Error('Controlled grid source onQueryChange must be a function.');
+    }
+  }
   const defaults = source.mode === 'local' ? localDefaults : remoteDefaults;
   const input = source.capabilities;
+  validateCapabilities(input);
   const resolved = {
     ...defaults,
     ...input,
@@ -157,11 +262,19 @@ export function createRemoteSource<Row extends object>(
 ): GridRemoteSource<Row>;
 export function createRemoteSource<Row extends object>(
   read: GridRemoteSource<Row>['read'],
-  options?: { capabilities?: GridCapabilities; policy?: GridRemoteSource<Row>['policy'] },
+  options?: {
+    datasetKey?: string;
+    capabilities?: GridCapabilities;
+    policy?: GridRemoteSource<Row>['policy'];
+  },
 ): GridRemoteSource<Row>;
 export function createRemoteSource<Row extends object>(
   input: Omit<GridRemoteSource<Row>, 'mode'> | GridRemoteSource<Row>['read'],
-  options: { capabilities?: GridCapabilities; policy?: GridRemoteSource<Row>['policy'] } = {},
+  options: {
+    datasetKey?: string;
+    capabilities?: GridCapabilities;
+    policy?: GridRemoteSource<Row>['policy'];
+  } = {},
 ): GridRemoteSource<Row> {
   return typeof input === 'function'
     ? { mode: 'remote', read: input, ...options }
@@ -171,8 +284,9 @@ export function createRemoteSource<Row extends object>(
 export function createLocalSource<Row extends object>(
   rows: readonly Row[],
   capabilities?: GridCapabilities,
+  datasetKey?: string,
 ): GridLocalSource<Row> {
-  return { mode: 'local', rows, capabilities };
+  return { mode: 'local', rows, capabilities, datasetKey };
 }
 
 export function createControlledSource<Row extends object>(
@@ -193,8 +307,8 @@ export function normalizeGridResult<Row extends object>(
   let total: GridReadResult<Row>['total'];
   if (result.total !== undefined) {
     if (!isPlainRecord(result.total)) throw new Error('Grid result total must be an object.');
-    if (!Number.isFinite(result.total.value) || !Number.isInteger(result.total.value)) {
-      throw new Error('Grid result total must be a finite integer.');
+    if (!Number.isSafeInteger(result.total.value)) {
+      throw new Error('Grid result total must be a safe integer.');
     }
     if (result.total.value < 0) throw new Error('Grid result total cannot be negative.');
     if (
@@ -274,6 +388,44 @@ export function normalizeGridResult<Row extends object>(
   if (result.meta !== undefined && !isPlainRecord(result.meta)) {
     throw new Error('Grid result meta must be an object.');
   }
+  if (pagination && result.rows.length > pagination.pageSize) {
+    throw new Error('Grid result rows cannot exceed the requested pageSize.');
+  }
+  if (total?.accuracy === 'exact' || (total && total.accuracy === undefined)) {
+    if (total.value < result.rows.length) {
+      throw new Error('Exact grid total cannot be smaller than the returned row count.');
+    }
+    if (pagination?.type === 'offset' && result.rows.length > 0) {
+      const minimum = (pagination.page - 1) * pagination.pageSize + result.rows.length;
+      if (total.value < minimum) {
+        throw new Error('Exact grid total is inconsistent with the requested offset page.');
+      }
+    }
+  }
+  if (total?.accuracy === 'atLeast') {
+    const minimum =
+      pagination?.type === 'offset' && result.rows.length > 0
+        ? (pagination.page - 1) * pagination.pageSize + result.rows.length
+        : result.rows.length;
+    if (total.value < minimum) {
+      throw new Error('At-least grid total is smaller than the rows already observed.');
+    }
+  }
+  if (
+    pagination?.type === 'offset' &&
+    total &&
+    (total.accuracy === undefined || total.accuracy === 'exact') &&
+    pageInfo
+  ) {
+    const expectedPrevious = pagination.page > 1;
+    const expectedNext = pagination.page * pagination.pageSize < total.value;
+    if (pageInfo.hasPrevious !== undefined && pageInfo.hasPrevious !== expectedPrevious) {
+      throw new Error('Grid pageInfo.hasPrevious is inconsistent with the exact total.');
+    }
+    if (pageInfo.hasNext !== undefined && pageInfo.hasNext !== expectedNext) {
+      throw new Error('Grid pageInfo.hasNext is inconsistent with the exact total.');
+    }
+  }
   return {
     ...result,
     rows: result.rows,
@@ -285,19 +437,54 @@ export function normalizeGridResult<Row extends object>(
   };
 }
 
+function capabilitiesIdentity(capabilities: GridCapabilities | undefined): string {
+  if (!capabilities) return '';
+  return stableStringify({
+    pagination: capabilities.pagination,
+    search: capabilities.search,
+    filter: capabilities.filter
+      ? {
+          logic: capabilities.filter.logic,
+          negation: capabilities.filter.negation,
+          maxDepth: capabilities.filter.maxDepth,
+          maxConditions: capabilities.filter.maxConditions,
+          operators: capabilities.filter.operators,
+        }
+      : undefined,
+    sort: capabilities.sort
+      ? { max: capabilities.sort.max, nulls: capabilities.sort.nulls }
+      : undefined,
+    projection: capabilities.projection,
+    summary: capabilities.summary,
+    facets: capabilities.facets,
+    selectAllMatching: capabilities.selectAllMatching,
+  });
+}
+
 export function sourceDataIdentity<Row extends object>(source: GridDataSource<Row>): unknown[] {
   if (source.mode === 'remote') {
-    return [source.read, stableStringify(source.capabilities), stableStringify(source.policy)];
+    return [
+      source.datasetKey,
+      source.read,
+      capabilitiesIdentity(source.capabilities),
+      stableStringify({
+        cacheTime: source.policy?.cacheTime,
+        staleTime: source.policy?.staleTime,
+        maxCacheEntries: source.policy?.maxCacheEntries,
+        keepPreviousData: source.policy?.keepPreviousData,
+      }),
+    ];
   }
   if (source.mode === 'local') {
-    return [source.rows, stableStringify(source.capabilities)];
+    return [source.datasetKey, source.rows, capabilitiesIdentity(source.capabilities)];
   }
   return [
+    source.datasetKey,
     source.result,
     source.loading,
     source.refreshing,
     source.error,
-    stableStringify(source.capabilities),
+    capabilitiesIdentity(source.capabilities),
     source.onQueryChange,
   ];
 }

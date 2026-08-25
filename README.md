@@ -1,4 +1,4 @@
-# @huiyun/data-grid
+# @stevenleep/data-grid
 
 面向 React Admin 的协议驱动 Data Grid。核心状态机不依赖 React、Ant Design 和 CSS；默认渲染层使用 Ant Design 6，并提供开箱即用的工具栏、表格、统计与分页布局。
 
@@ -45,23 +45,23 @@ README 只保留概览和核心示例。完整接入说明位于 [docs/README.md
 - 浏览器需支持 ES2020、`AbortController`、`ResizeObserver`、Pointer Events，以及带 IANA 时区数据的现代 `Intl`
 
 ```bash
-pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons
+pnpm add @stevenleep/data-grid react react-dom antd @ant-design/icons
 ```
 
 UI 依赖都是 optional peers：包不会悄悄选择或安装它们的版本。只用与 UI 无关的 Core 时可只安装包本身：
 
 ```bash
-pnpm add @huiyun/data-grid
+pnpm add @stevenleep/data-grid
 ```
 
 ```ts
-import { compileGridQuery, createGrid } from '@huiyun/data-grid/core';
+import { compileGridQuery, createGrid } from '@stevenleep/data-grid/core';
 ```
 
 在应用入口导入一次样式：
 
 ```ts
-import '@huiyun/data-grid/style.css';
+import '@stevenleep/data-grid/style.css';
 ```
 
 根入口、`/react` 和 `/antd` 已发布为 React Client Component 边界；`/core` 保持 server-safe。Next.js App Router 页面如果还直接使用业务 hooks、浏览器 API 或交互状态，页面自己的组合组件仍应声明 `"use client"`。
@@ -96,7 +96,7 @@ pnpm demo
 ## 快速开始
 
 ```tsx
-import { DataGrid, createFieldHelper, createRemoteSource, defineGrid } from '@huiyun/data-grid';
+import { DataGrid, createFieldHelper, createRemoteSource, defineGrid } from '@stevenleep/data-grid';
 
 interface Order {
   id: string;
@@ -499,15 +499,15 @@ const definition = bindGridSchema(schema, runtime, 'id');
 ## 分层导入
 
 ```ts
-import { createGrid, compileGridQuery } from '@huiyun/data-grid/core';
-import { GridProvider, useGrid, useGridSelector } from '@huiyun/data-grid/react';
-import { DataGrid, GridTable } from '@huiyun/data-grid/antd';
-import '@huiyun/data-grid/style.css';
+import { createGrid, compileGridQuery } from '@stevenleep/data-grid/core';
+import { GridProvider, useGrid, useGridSelector } from '@stevenleep/data-grid/react';
+import { DataGrid, GridTable } from '@stevenleep/data-grid/antd';
+import '@stevenleep/data-grid/style.css';
 ```
 
-- `@huiyun/data-grid/core`：纯 TypeScript，无 React、Ant Design、CSS 或 DOM 运行时依赖；类型协议使用标准 `AbortSignal` 与最小 `GridStorageLike`，不要求 DOM lib。
-- `@huiyun/data-grid/react`：实例生命周期、Provider 和 selector 订阅。
-- `@huiyun/data-grid/antd`：Ant Design 6 原子组件与默认配方。
+- `@stevenleep/data-grid/core`：纯 TypeScript，无 React、Ant Design、CSS 或 DOM 运行时依赖；类型协议使用标准 `AbortSignal` 与最小 `GridStorageLike`，不要求 DOM lib。
+- `@stevenleep/data-grid/react`：实例生命周期、Provider 和 selector 订阅。
+- `@stevenleep/data-grid/antd`：Ant Design 6 原子组件与默认配方。
 - 根入口：便捷导出以上公共 API。
 
 ## 明确边界

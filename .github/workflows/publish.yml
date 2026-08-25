@@ -63,7 +63,7 @@ jobs:
         id: package
         shell: bash
         run: |
-          package_file="huiyun-data-grid-${GITHUB_REF_NAME#v}.tgz"
+          package_file="stevenleep-data-grid-${GITHUB_REF_NAME#v}.tgz"
           artifact_name="npm-package-${GITHUB_REF_NAME}"
           pnpm pack --out "$RUNNER_TEMP/$package_file"
           cd "$RUNNER_TEMP"
@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 10
     environment:
       name: npm
-      url: https://www.npmjs.com/package/@huiyun/data-grid
+      url: https://www.npmjs.com/package/@stevenleep/data-grid
     permissions:
       contents: read
       id-token: write

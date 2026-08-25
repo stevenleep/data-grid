@@ -4,13 +4,13 @@
 
 ## 包入口
 
-| 入口                          | 内容                         |
-| ----------------------------- | ---------------------------- |
-| `@huiyun/data-grid`           | 全部常用 API                 |
-| `@huiyun/data-grid/core`      | 纯 TypeScript 核心           |
-| `@huiyun/data-grid/react`     | React Provider、Hooks 和订阅 |
-| `@huiyun/data-grid/antd`      | Ant Design 6 组件和类型      |
-| `@huiyun/data-grid/style.css` | 默认样式                     |
+| 入口                              | 内容                         |
+| --------------------------------- | ---------------------------- |
+| `@stevenleep/data-grid`           | 全部常用 API                 |
+| `@stevenleep/data-grid/core`      | 纯 TypeScript 核心           |
+| `@stevenleep/data-grid/react`     | React Provider、Hooks 和订阅 |
+| `@stevenleep/data-grid/antd`      | Ant Design 6 组件和类型      |
+| `@stevenleep/data-grid/style.css` | 默认样式                     |
 
 根入口、`/react` 和 `/antd` 是 React Client Component 入口；`/core` 是不带 `"use client"` 的 server-safe 入口。只有上述 exports 和对应 API reports 中的符号属于公共契约，其他源码路径不允许深层导入。
 

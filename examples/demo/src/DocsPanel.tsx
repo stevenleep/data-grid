@@ -14,8 +14,8 @@ const quickStart = `import {
   createFieldHelper,
   createRemoteSource,
   defineGrid,
-} from '@huiyun/data-grid';
-import '@huiyun/data-grid/style.css';
+} from '@stevenleep/data-grid';
+import '@stevenleep/data-grid/style.css';
 
 const field = createFieldHelper<Order>();
 const definition = defineGrid<Order>({
@@ -141,7 +141,7 @@ export function DocsPanel() {
             showIcon
             title="安装"
             description={
-              <code>pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons</code>
+              <code>pnpm add @stevenleep/data-grid react react-dom antd @ant-design/icons</code>
             }
           />
           <CodeBlock>{quickStart}</CodeBlock>

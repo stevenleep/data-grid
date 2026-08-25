@@ -1,5 +1,5 @@
 {
-  "name": "@huiyun/data-grid-demo",
+  "name": "@stevenleep/data-grid-demo",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.2",
-    "@huiyun/data-grid": "workspace:*",
+    "@stevenleep/data-grid": "workspace:*",
     "antd": "^6.6.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"

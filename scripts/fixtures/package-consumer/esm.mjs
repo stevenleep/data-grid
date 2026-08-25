@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { createElement, version as reactVersion } from 'react';
 import { renderToString } from 'react-dom/server';
-import * as root from '@huiyun/data-grid';
-import * as core from '@huiyun/data-grid/core';
-import * as react from '@huiyun/data-grid/react';
-import * as antd from '@huiyun/data-grid/antd';
+import * as root from '@stevenleep/data-grid';
+import * as core from '@stevenleep/data-grid/core';
+import * as react from '@stevenleep/data-grid/react';
+import * as antd from '@stevenleep/data-grid/antd';
 
 const expectedReactMajor = process.argv[2];
 assert.ok(expectedReactMajor, 'Expected the React major as the first argument.');
@@ -27,7 +27,7 @@ assert.equal(Object.hasOwn(antd, 'createGrid'), false);
 assert.equal(Object.hasOwn(antd, 'defineGrid'), false);
 assert.equal(Object.hasOwn(core, 'DataGrid'), false);
 
-const stylesheetUrl = import.meta.resolve('@huiyun/data-grid/style.css');
+const stylesheetUrl = import.meta.resolve('@stevenleep/data-grid/style.css');
 assert.match(stylesheetUrl, /style\.css$/);
 
 const rows = [{ id: 'order-1', orderNo: 'SO-1001' }];

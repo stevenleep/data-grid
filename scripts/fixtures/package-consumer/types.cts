@@ -1,7 +1,7 @@
-import root = require('@huiyun/data-grid');
-import core = require('@huiyun/data-grid/core');
-import react = require('@huiyun/data-grid/react');
-import antd = require('@huiyun/data-grid/antd');
+import root = require('@stevenleep/data-grid');
+import core = require('@stevenleep/data-grid/core');
+import react = require('@stevenleep/data-grid/react');
+import antd = require('@stevenleep/data-grid/antd');
 
 interface Row {
   id: string;

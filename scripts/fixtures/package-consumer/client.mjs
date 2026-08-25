@@ -62,7 +62,7 @@ const React = await import('react');
 const { createRoot, hydrateRoot } = await import('react-dom/client');
 const { renderToString } = await import('react-dom/server');
 const reactDomTestUtils = await import('react-dom/test-utils');
-const { DataGrid, createLocalSource, defineGrid } = await import('@huiyun/data-grid');
+const { DataGrid, createLocalSource, defineGrid } = await import('@stevenleep/data-grid');
 const act = React.act ?? reactDomTestUtils.act;
 
 const rows = [{ id: 'row-1', name: 'Client and hydration smoke' }];

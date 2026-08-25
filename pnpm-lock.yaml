@@ -81,7 +81,7 @@ importers:
       '@ant-design/icons':
         specifier: ^6.3.2
         version: 6.3.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@huiyun/data-grid':
+      '@stevenleep/data-grid':
         specifier: workspace:*
         version: link:../..
       antd:

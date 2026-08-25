@@ -6,7 +6,7 @@ import {
   type GridDefinition,
   type GridQuery,
   type GridStorageLike,
-} from '@huiyun/data-grid/core';
+} from '@stevenleep/data-grid/core';
 
 interface Row {
   id: string;

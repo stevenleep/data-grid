@@ -15,11 +15,11 @@
 | 浏览器           | 支持 ES2020、`AbortController`、`ResizeObserver`、Pointer Events、现代 `Intl`/IANA 时区的 evergreen 浏览器 | packed Vite 产物在 headless Chromium 中执行                                        |
 | 包格式           | ESM、CommonJS、`.d.mts`、`.d.cts`、独立 `style.css`                                                        | pnpm 与 npm 安装的真实 tarball；Node 加载、TS 解析和 Vite 构建                     |
 
-`@huiyun/data-grid/core` 不需要 React、React DOM、Ant Design 或图标包。四个 UI peer 在包元数据中都是 optional，只用 Core 的服务或工具不会被迫安装 UI 栈。使用 `/react`、`/antd` 或根入口时，消费应用必须显式安装它实际使用的 peers。
+`@stevenleep/data-grid/core` 不需要 React、React DOM、Ant Design 或图标包。四个 UI peer 在包元数据中都是 optional，只用 Core 的服务或工具不会被迫安装 UI 栈。使用 `/react`、`/antd` 或根入口时，消费应用必须显式安装它实际使用的 peers。
 
 Core-only 声明分别在 TypeScript 5.4 下界和仓库当前版本中，以 `skipLibCheck: false`、不包含 DOM `lib` 的配置验证。React 18 运行时下界为 18.0.0；NodeNext 自动 JSX 消费使用最早提供所需子路径导出的 `@types/react@18.0.8` 与 `@types/react-dom@18.0.2`。React 19.0 下界使用对应的精确 19.0.0 types。完整 AntD 消费项目使用 `skipLibCheck: true`，因为 AntD 6/rc-component 当前声明在 React 18 类型下存在上游库内部冲突；这不会跳过消费项目自身或 Data Grid API 的类型检查。必须对所有第三方 `.d.ts` 开启严格库检查的团队，需在锁定 AntD/React/TypeScript 组合前单独验证上游兼容性。
 
-旧的 `moduleResolution: "node"` 不理解 `package.json#exports`，因此不支持 `@huiyun/data-grid/core` 等子路径。旧项目应迁移到 `Bundler`、`Node16` 或 `NodeNext`。
+旧的 `moduleResolution: "node"` 不理解 `package.json#exports`，因此不支持 `@stevenleep/data-grid/core` 等子路径。旧项目应迁移到 `Bundler`、`Node16` 或 `NodeNext`。
 
 根入口、`/react` 和 `/antd` 是 React Client Component 边界，构建产物必须以 `"use client"` 开头；`/core` 不带该指令，可在 RSC/SSR 服务端代码中使用。Next.js App Router 中如果页面仍需组合业务状态或浏览器 API，应由业务组件本身声明 `"use client"`。
 
@@ -116,7 +116,7 @@ Demo 构建会拆分 React、AntD 和图标 chunk，并执行两个 gzip 预算�
 
 npm 要求包已存在才能绑定 Trusted Publisher。首次 bootstrap **不能使用正式 Release 即将发布的同一版本**；npm 版本号一旦发布永久不可复用。安全的最小流程是用同一个未来稳定版的专用预发布号：
 
-先在 npm 网页确认发布账户是 `@huiyun` 组织成员且拥有该包名的发布权限；这也是外部设置，仓库无法自行保证。
+先确认 npm 登录用户为 `stevenleep`，并拥有个人 scope `@stevenleep` 下该包名的发布权限；这也是外部设置，仓库无法自行保证。
 
 ```bash
 # 示例：正式目标是 0.2.0，bootstrap 使用独立且不可复用的版本

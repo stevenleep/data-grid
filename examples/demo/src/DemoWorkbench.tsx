@@ -36,7 +36,7 @@ import {
   type GridInstance,
   type GridPersistence,
   type GridRequestQuery,
-} from '@huiyun/data-grid';
+} from '@stevenleep/data-grid';
 import { CapabilityLab } from './CapabilityLab';
 import { DocsPanel } from './DocsPanel';
 import type { DemoOrder } from './data';
@@ -268,7 +268,7 @@ export function DemoWorkbench(props: DemoWorkbenchProps) {
           <div className="demo-eyebrow">
             <ExperimentOutlined /> INTERACTIVE PACKAGE DEMO
           </div>
-          <Typography.Title level={1}>@huiyun/data-grid</Typography.Title>
+          <Typography.Title level={1}>@stevenleep/data-grid</Typography.Title>
           <Typography.Paragraph>
             面向 Admin 的协议驱动数据表格。现在这不是静态样例，而是一套可完整验收的订单工作台。
           </Typography.Paragraph>

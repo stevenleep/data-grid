@@ -170,9 +170,9 @@ if (!['npm', 'pnpm'].includes(manager)) {
 if (withBrowser && !withVite) {
   throw new Error('--with-browser requires --with-vite.');
 }
-const temporaryDirectory = mkdtempSync(join(tmpdir(), 'huiyun-data-grid-package-'));
+const temporaryDirectory = mkdtempSync(join(tmpdir(), 'stevenleep-data-grid-package-'));
 const consumerDirectory = join(temporaryDirectory, 'consumer');
-const tarballPath = join(temporaryDirectory, 'huiyun-data-grid.tgz');
+const tarballPath = join(temporaryDirectory, 'stevenleep-data-grid.tgz');
 
 try {
   run('pnpm', ['pack', '--out', tarballPath], repositoryDirectory);
@@ -181,7 +181,7 @@ try {
   cpSync(fixtureDirectory, consumerDirectory, { recursive: true });
 
   const dependencies = {
-    '@huiyun/data-grid': `file:${tarballPath}`,
+    '@stevenleep/data-grid': `file:${tarballPath}`,
   };
   const devDependencies = {
     typescript: profile.typescript,
@@ -208,7 +208,7 @@ try {
     join(consumerDirectory, 'package.json'),
     `${JSON.stringify(
       {
-        name: `@huiyun/data-grid-consumer-${profile.name}`,
+        name: `@stevenleep/data-grid-consumer-${profile.name}`,
         private: true,
         type: 'module',
         packageManager: rootPackage.packageManager,
@@ -235,7 +235,7 @@ try {
     run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], consumerDirectory);
   }
 
-  const installedPackage = join(consumerDirectory, 'node_modules', '@huiyun', 'data-grid');
+  const installedPackage = join(consumerDirectory, 'node_modules', '@stevenleep', 'data-grid');
   const expectedFiles = [
     'dist/index.mjs',
     'dist/index.cjs',

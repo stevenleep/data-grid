@@ -4,6 +4,7 @@
 
 ### Breaking changes since 0.1.0
 
+- The distributed package now uses the `@stevenleep/data-grid` npm scope. Update package dependencies and all root/subpath/style imports from `@huiyun/data-grid`. The existing `huiyun.data-grid/v1`, `huiyun.data-grid/preferences/v1`, and default persistence key namespace remain unchanged so wire payloads and saved user preferences stay compatible.
 - `GridOption.value` and schema option values no longer accept `null`; use an omitted filter value for “unset” and a string/number/boolean option identity for selectable values.
 - Grid-owned row selection now rejects platform `selectedRowKeys`, `defaultSelectedRowKeys`, and `preserveSelectedRowKeys`. Observe Ant Design selection callbacks if needed, but keep selected-key ownership in the Grid instance.
 - Invalid schema, query, result, persistence, projection, temporal, codec, and option payloads now fail at their documented protocol boundary instead of being silently accepted. Adapters that previously relied on coercion must normalize before crossing that boundary.

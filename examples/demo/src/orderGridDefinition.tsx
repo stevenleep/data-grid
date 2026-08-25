@@ -19,7 +19,7 @@ import {
   type GridRequestQuery,
   type GridResolvedDefinition,
   type GridSelectionState,
-} from '@huiyun/data-grid';
+} from '@stevenleep/data-grid';
 import { demoCustomers, demoOwners, demoTags, waitForServer, type DemoOrder } from './data';
 import { downloadOrdersCsv, executeOrderRequest } from './mockOrderApi';
 

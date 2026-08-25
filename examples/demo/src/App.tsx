@@ -8,7 +8,7 @@ import {
   type GridEvent,
   type GridInstance,
   type GridRequestQuery,
-} from '@huiyun/data-grid';
+} from '@stevenleep/data-grid';
 import { createDemoOrders, demoCustomers, demoOwners, waitForServer, type DemoOrder } from './data';
 import { DemoWorkbench, type ActivityItem, type OrderGridInteractions } from './DemoWorkbench';
 import { OrderDetail } from './OrderDetail';

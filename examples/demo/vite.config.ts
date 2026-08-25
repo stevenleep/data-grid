@@ -43,11 +43,11 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: '@huiyun/data-grid/style.css',
+        find: '@stevenleep/data-grid/style.css',
         replacement: fileURLToPath(new URL('../../src/styles.css', import.meta.url)),
       },
       {
-        find: '@huiyun/data-grid',
+        find: '@stevenleep/data-grid',
         replacement: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
       },
     ],

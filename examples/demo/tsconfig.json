@@ -6,8 +6,8 @@
     "moduleResolution": "Bundler",
     "baseUrl": ".",
     "paths": {
-      "@huiyun/data-grid": ["../../src/index.ts"],
-      "@huiyun/data-grid/style.css": ["../../style.d.ts"]
+      "@stevenleep/data-grid": ["../../src/index.ts"],
+      "@stevenleep/data-grid/style.css": ["../../style.d.ts"]
     },
     "jsx": "react-jsx",
     "strict": true,

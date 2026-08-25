@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import * as core from '@huiyun/data-grid/core';
+import * as core from '@stevenleep/data-grid/core';
 
 const { createGrid, createLocalSource, defineGrid } = core;
 for (const implementationSymbol of [

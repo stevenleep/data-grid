@@ -9,17 +9,17 @@
 - 支持 ES2020、`AbortController`、`ResizeObserver`、Pointer Events 和现代 `Intl`/IANA 时区的 evergreen 浏览器
 
 ```bash
-pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons
+pnpm add @stevenleep/data-grid react react-dom antd @ant-design/icons
 ```
 
-React、React DOM、Ant Design 和图标包都是 optional peer dependencies；使用默认 DataGrid 时需要由应用显式安装，从而避免包替业务项目决定 UI 版本。只用 `@huiyun/data-grid/core` 时可以只安装 `@huiyun/data-grid`，不需要任何 UI peer。
+React、React DOM、Ant Design 和图标包都是 optional peer dependencies；使用默认 DataGrid 时需要由应用显式安装，从而避免包替业务项目决定 UI 版本。只用 `@stevenleep/data-grid/core` 时可以只安装 `@stevenleep/data-grid`，不需要任何 UI peer。
 
 根入口、`/react` 和 `/antd` 自带 `"use client"` 边界，`/core` 不带该指令。Next.js App Router 中可以从服务端模块使用 `/core`；直接组合 DataGrid、业务 hooks 或浏览器 API 的应用组件仍应声明 `"use client"`。
 
 在应用入口导入一次样式：
 
 ```ts
-import '@huiyun/data-grid/style.css';
+import '@stevenleep/data-grid/style.css';
 ```
 
 ## 定义行数据
@@ -38,7 +38,7 @@ interface Order {
 ## 定义表格协议
 
 ```tsx
-import { createFieldHelper, defineGrid } from '@huiyun/data-grid';
+import { createFieldHelper, defineGrid } from '@stevenleep/data-grid';
 
 const field = createFieldHelper<Order>();
 const fields = [
@@ -96,7 +96,7 @@ export const orderGrid = defineGrid<Order>({
 ## 接入服务端数据
 
 ```tsx
-import { DataGrid, createRemoteSource } from '@huiyun/data-grid';
+import { DataGrid, createRemoteSource } from '@stevenleep/data-grid';
 
 const source = createRemoteSource<Order>({
   capabilities: {

@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const core = require('@huiyun/data-grid/core');
+const core = require('@stevenleep/data-grid/core');
 const { createGrid, createLocalSource, defineGrid } = core;
 
 for (const implementationSymbol of [

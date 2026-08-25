@@ -24,7 +24,7 @@ import {
   type GridQuery,
   type GridRequestQuery,
   type GridSelectionState,
-} from '@huiyun/data-grid';
+} from '@stevenleep/data-grid';
 import { createDemoOrders, waitForServer, type DemoOrder } from './data';
 import { executeOrderRequest } from './mockOrderApi';
 

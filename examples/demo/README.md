@@ -1,6 +1,6 @@
-# @huiyun/data-grid Demo
+# @stevenleep/data-grid Demo
 
-这是 `@huiyun/data-grid` 的完整交互站点，不是静态组件陈列。它用一个订单后台说明业务接入方式，并用独立实验室验证不同数据源和运行状态。
+这是 `@stevenleep/data-grid` 的完整交互站点，不是静态组件陈列。它用一个订单后台说明业务接入方式，并用独立实验室验证不同数据源和运行状态。
 
 ## 运行
 

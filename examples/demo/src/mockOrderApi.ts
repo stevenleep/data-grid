@@ -10,7 +10,7 @@ import {
   type GridRequestQuery,
   type GridResolvedDefinition,
   type GridSort,
-} from '@huiyun/data-grid';
+} from '@stevenleep/data-grid';
 import type { DemoOrder } from './data';
 
 type RequestFilterNode = GridRequestFilterGroup | GridRequestFilterCondition;

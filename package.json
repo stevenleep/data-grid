@@ -1,5 +1,5 @@
 {
-  "name": "@huiyun/data-grid",
+  "name": "@stevenleep/data-grid",
   "version": "0.2.0",
   "description": "A protocol-driven data grid with a headless core and an Ant Design 6 renderer for React admin applications.",
   "keywords": [
@@ -93,8 +93,8 @@
   "scripts": {
     "build": "tsdown && node scripts/clean-style-artifacts.mjs",
     "dev": "tsdown --watch",
-    "demo": "pnpm --filter @huiyun/data-grid-demo dev",
-    "demo:build": "pnpm --filter @huiyun/data-grid-demo build",
+    "demo": "pnpm --filter @stevenleep/data-grid-demo dev",
+    "demo:build": "pnpm --filter @stevenleep/data-grid-demo build",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

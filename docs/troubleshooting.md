@@ -59,7 +59,7 @@ Remote source 未设置 `datasetKey` 时，`read` 函数引用变化会被视为
 确保应用入口导入：
 
 ```ts
-import '@huiyun/data-grid/style.css';
+import '@stevenleep/data-grid/style.css';
 ```
 
 ## 安装后报缺少 React 或 AntD
@@ -74,11 +74,11 @@ pnpm add react react-dom antd @ant-design/icons
 
 ## 子路径类型无法解析
 
-`@huiyun/data-grid/core`、`/react` 和 `/antd` 使用现代 `exports`。TypeScript 应配置 `moduleResolution: "Bundler"`、`"Node16"` 或 `"NodeNext"`；旧的 `"node"` 不在支持范围内。不要只添加路径别名掩盖运行时同样无法解析的问题。
+`@stevenleep/data-grid/core`、`/react` 和 `/antd` 使用现代 `exports`。TypeScript 应配置 `moduleResolution: "Bundler"`、`"Node16"` 或 `"NodeNext"`；旧的 `"node"` 不在支持范围内。不要只添加路径别名掩盖运行时同样无法解析的问题。
 
 ## Core-only 项目需要 DOM lib
 
-Core 的本地持久化使用最小 `GridStorageLike`，不要求 DOM `Storage`。取消仍采用标准 `AbortSignal`：Node 服务项目应安装匹配运行时的 `@types/node`，浏览器/Worker 项目由 `DOM` 或 `WebWorker` lib 提供。CI 会在 TypeScript 5.4、`skipLibCheck: false`、仅 `ES2022` lib 加 Node typings 的配置验证；如果仍出现 `Storage`、`Window` 等 DOM 全局，先确认导入的是 `@huiyun/data-grid/core` 且没有把根入口或 `/react` 带入服务端文件，然后用真实 tarball 复现并报告声明路径。
+Core 的本地持久化使用最小 `GridStorageLike`，不要求 DOM `Storage`。取消仍采用标准 `AbortSignal`：Node 服务项目应安装匹配运行时的 `@types/node`，浏览器/Worker 项目由 `DOM` 或 `WebWorker` lib 提供。CI 会在 TypeScript 5.4、`skipLibCheck: false`、仅 `ES2022` lib 加 Node typings 的配置验证；如果仍出现 `Storage`、`Window` 等 DOM 全局，先确认导入的是 `@stevenleep/data-grid/core` 且没有把根入口或 `/react` 带入服务端文件，然后用真实 tarball 复现并报告声明路径。
 
 ## Next.js 提示 hooks 只能在 Client Component 使用
 

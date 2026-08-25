@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
-import { createFieldHelper, createLocalSource, DataGrid, defineGrid } from '@huiyun/data-grid';
-import '@huiyun/data-grid/style.css';
+import { createFieldHelper, createLocalSource, DataGrid, defineGrid } from '@stevenleep/data-grid';
+import '@stevenleep/data-grid/style.css';
 
 declare global {
   interface Window {

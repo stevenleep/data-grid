@@ -4,7 +4,7 @@ import {
   GridEditableCell,
   type GridAction,
   type GridResolvedField,
-} from '@huiyun/data-grid';
+} from '@stevenleep/data-grid';
 
 interface Row {
   id: string;

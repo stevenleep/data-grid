@@ -286,7 +286,7 @@ export function GridTable<Row extends object>({
   useEffect(() => {
     if (!hasPlatformFilters(definitionColumns)) return;
     console.warn(
-      '[huiyun/data-grid] AntD native column filters are ignored. Define filters on Grid fields so pagination, totals and remote queries stay consistent.',
+      '[@stevenleep/data-grid] AntD native column filters are ignored. Define filters on Grid fields so pagination, totals and remote queries stay consistent.',
     );
   }, [definitionColumns]);
   useIsomorphicLayoutEffect(

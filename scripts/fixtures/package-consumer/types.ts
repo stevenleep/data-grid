@@ -7,11 +7,11 @@ import {
   type GridDefinition,
   type GridPaginationState,
   type GridTotalValue,
-} from '@huiyun/data-grid';
-import { defineGrid as defineCoreGrid, type GridQuery } from '@huiyun/data-grid/core';
-import { useGrid, type GridProviderProps } from '@huiyun/data-grid/react';
-import { GridTable, type GridTableProps } from '@huiyun/data-grid/antd';
-import '@huiyun/data-grid/style.css';
+} from '@stevenleep/data-grid';
+import { defineGrid as defineCoreGrid, type GridQuery } from '@stevenleep/data-grid/core';
+import { useGrid, type GridProviderProps } from '@stevenleep/data-grid/react';
+import { GridTable, type GridTableProps } from '@stevenleep/data-grid/antd';
+import '@stevenleep/data-grid/style.css';
 
 interface Row {
   id: string;

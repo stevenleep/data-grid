@@ -6,11 +6,11 @@
     "moduleResolution": "Bundler",
     "baseUrl": ".",
     "paths": {
-      "@huiyun/data-grid": ["./src/index.ts"],
-      "@huiyun/data-grid/core": ["./src/core/index.ts"],
-      "@huiyun/data-grid/react": ["./src/react/index.ts"],
-      "@huiyun/data-grid/antd": ["./src/antd/index.ts"],
-      "@huiyun/data-grid/style.css": ["./style.d.ts"]
+      "@stevenleep/data-grid": ["./src/index.ts"],
+      "@stevenleep/data-grid/core": ["./src/core/index.ts"],
+      "@stevenleep/data-grid/react": ["./src/react/index.ts"],
+      "@stevenleep/data-grid/antd": ["./src/antd/index.ts"],
+      "@stevenleep/data-grid/style.css": ["./style.d.ts"]
     },
     "jsx": "react-jsx",
     "strict": true,

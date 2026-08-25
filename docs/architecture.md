@@ -5,13 +5,13 @@
 ```text
 业务定义 / JSON Schema / 数据接口
                  │
-       @huiyun/data-grid/core
+       @stevenleep/data-grid/core
    查询、状态机、数据源、动作、编辑、视图
                  │
-       @huiyun/data-grid/react
+       @stevenleep/data-grid/react
       生命周期、Provider、Selector 订阅
                  │
-       @huiyun/data-grid/antd
+       @stevenleep/data-grid/antd
    Ant Design 6 表格、工具栏、面板和单元格
 ```
 

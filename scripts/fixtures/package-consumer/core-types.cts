@@ -1,4 +1,4 @@
-import core = require('@huiyun/data-grid/core');
+import core = require('@stevenleep/data-grid/core');
 
 interface Row {
   id: string;

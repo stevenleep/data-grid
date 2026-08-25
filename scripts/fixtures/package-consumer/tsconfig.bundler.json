@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "files": ["types.ts", "browser.tsx"]
+  "files": ["types.ts", "public-components.tsx", "browser.tsx"]
 }

@@ -4,8 +4,11 @@ import type {
   GridColumnDefinition,
   GridColumnSchema,
   GridDefinition,
+  GridFieldDerivation,
   GridFieldDefinition,
+  GridFieldEdit,
   GridFieldFilter,
+  GridFieldRelation,
   GridFieldRuntime,
   GridFieldSchema,
   GridFilterOperator,
@@ -16,15 +19,28 @@ import type {
   GridResolvedColumn,
   GridResolvedDefinition,
   GridResolvedField,
+  GridResolvedFieldDerivation,
   GridRowKey,
   GridRuntime,
   GridSchema,
   GridValueTypeRegistry,
   GridValueTypeDefinition,
 } from './types';
-import { getFilterOperatorValueKind, getPathValue, isEmptyValue, stableStringify } from './model';
+import {
+  getFilterOperatorValueKind,
+  getGridFieldDependencies,
+  getPathValue,
+  isEmptyValue,
+  stableStringify,
+} from './model';
 import { compareExactNumeric } from './numeric';
 import { normalizeGridOptions } from './source';
+import {
+  compareGridDateTimeValues,
+  compareGridDateValues,
+  gridDateTimeValueEquals,
+  gridDateValueEquals,
+} from './temporal';
 
 const textOperators: GridFilterOperator[] = [
   'contains',
@@ -177,6 +193,73 @@ function entityIdentity(value: unknown): GridOptionValue | undefined {
   }
 }
 
+function primitiveIdentity(value: unknown): GridOptionValue | undefined {
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readIdentityProperty(value: unknown, property: string): GridOptionValue | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  try {
+    return primitiveIdentity((value as Record<string, unknown>)[property]);
+  } catch {
+    return undefined;
+  }
+}
+
+function readEntityProperty(value: unknown, property: string | undefined): unknown {
+  if (!property || !value || typeof value !== 'object') return undefined;
+  try {
+    return (value as Record<string, unknown>)[property];
+  } catch {
+    return undefined;
+  }
+}
+
+function relationItemSearchText(
+  value: unknown,
+  labelField: string | undefined,
+  getIdentity: ((value: never) => GridOptionValue | undefined) | undefined,
+): string {
+  if (value == null) return '';
+  if (typeof value !== 'object') {
+    try {
+      return String(value);
+    } catch {
+      return '';
+    }
+  }
+
+  const candidate =
+    readEntityProperty(value, labelField) ??
+    readEntityProperty(value, 'label') ??
+    readEntityProperty(value, 'name') ??
+    readEntityProperty(value, 'title');
+  let searchable = candidate;
+  if (searchable == null) {
+    try {
+      searchable = getIdentity?.(value as never);
+    } catch {
+      // A partial relation value may not satisfy a custom identity resolver.
+    }
+  }
+  if (searchable == null) return '';
+  try {
+    return String(searchable);
+  } catch {
+    return '';
+  }
+}
+
+function relationSearchText(
+  value: unknown,
+  labelField: string | undefined,
+  getIdentity: ((value: never) => GridOptionValue | undefined) | undefined,
+): string {
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item) => relationItemSearchText(item, labelField, getIdentity)).join(' ');
+}
+
 function entityEquals(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   const leftIdentity = entityIdentity(left);
@@ -194,6 +277,33 @@ function entityCollectionEquals(left: unknown, right: unknown): boolean {
     unmatched.splice(index, 1);
     return true;
   });
+}
+
+function identityAwareEquals(
+  getIdentity: (value: never) => GridOptionValue | undefined,
+  left: unknown,
+  right: unknown,
+): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    const unmatched = [...right];
+    return left.every((item) => {
+      const index = unmatched.findIndex((candidate) =>
+        identityAwareEquals(getIdentity, item, candidate),
+      );
+      if (index < 0) return false;
+      unmatched.splice(index, 1);
+      return true;
+    });
+  }
+  try {
+    const leftIdentity = primitiveIdentity(left) ?? getIdentity(left as never);
+    const rightIdentity = primitiveIdentity(right) ?? getIdentity(right as never);
+    return leftIdentity !== undefined && Object.is(leftIdentity, rightIdentity);
+  } catch {
+    return false;
+  }
 }
 
 function compareUnknown(left: unknown, right: unknown): number {
@@ -271,11 +381,15 @@ export const builtinValueTypes: GridValueTypeRegistry<object> = {
     defaultColumn: { width: 128, align: 'left' },
     operators: dateOperators,
     codec: jsonCodec,
+    equals: gridDateValueEquals,
+    compare: compareGridDateValues,
   },
   dateTime: {
     defaultColumn: { width: 176, align: 'left' },
     operators: dateOperators,
     codec: jsonCodec,
+    equals: gridDateTimeValueEquals,
+    compare: compareGridDateTimeValues,
   },
   duration: {
     defaultColumn: { width: 112, align: 'right' },
@@ -413,7 +527,7 @@ function resolveField<Row extends object>(
   field: GridAnyFieldDefinition<Row>,
   valueTypes: GridValueTypeRegistry<Row>,
 ): GridAnyResolvedField<Row> {
-  const valueType = field.valueType || 'text';
+  const valueType = field.valueType || (field.relation ? 'relation' : 'text');
   const type = valueTypes[valueType];
   if (!type) {
     throw new Error(
@@ -425,9 +539,22 @@ function resolveField<Row extends object>(
   const normalize = field.normalize || type.normalize || ((value: unknown) => value);
   const transport = field.transport || {};
   const codec = type.codec || (jsonCodec as GridValueTypeDefinition<Row>['codec'])!;
+  const relation = field.relation ? Object.freeze({ ...field.relation }) : undefined;
+  const derivation = field.derivation
+    ? (Object.freeze({
+        ...field.derivation,
+        dependencies: Object.freeze(getGridFieldDependencies(field.derivation)),
+        binding: field.derivation.binding || (field.accessor ? 'runtime' : 'source'),
+      }) as GridResolvedFieldDerivation)
+    : undefined;
+  const defaultOperators = relation
+    ? relation.cardinality === 'many'
+      ? multiOptionOperators
+      : optionOperators
+    : type.operators;
   let filter = normalizeFeature(field.filter, {
-    operators: type.operators,
-    defaultOperator: type.operators?.[0] || 'equals',
+    operators: defaultOperators,
+    defaultOperator: defaultOperators?.[0] || 'equals',
   });
   if (filter) {
     const operators = [...new Set(filter.operators || ['equals'])];
@@ -469,13 +596,70 @@ function resolveField<Row extends object>(
     filter = { ...filter, operators, defaultOperator, operatorValueKinds };
   }
   const sort = normalizeFeature(field.sort);
-  const edit = normalizeFeature(field.edit);
+  const edit = normalizeFeature(
+    field.edit,
+    relation ? ({ multiple: relation.cardinality === 'many' } satisfies GridFieldEdit) : undefined,
+  );
+  const configuredIdentity = field.getIdentity;
+  const typeIdentity = type.getIdentity;
+  const relationKeyField = relation?.keyField;
+  const getIdentity =
+    configuredIdentity || relationKeyField
+      ? (value: unknown): GridOptionValue | undefined => {
+          const primitive = primitiveIdentity(value);
+          if (primitive !== undefined) return primitive;
+          if (configuredIdentity) {
+            try {
+              const identity = configuredIdentity(value as never);
+              if (identity !== undefined) return identity;
+            } catch {
+              // Primitive transport values and partial entities may not satisfy
+              // a domain-specific resolver; continue through declared fallbacks.
+            }
+          }
+          if (relationKeyField) {
+            const identity = readIdentityProperty(value, relationKeyField);
+            if (identity !== undefined) return identity;
+          }
+          try {
+            return typeIdentity?.(value as never);
+          } catch {
+            return undefined;
+          }
+        }
+      : typeIdentity;
+  const equals =
+    field.equals ||
+    ((field.getIdentity || relation?.keyField) && getIdentity
+      ? (left: unknown, right: unknown) => identityAwareEquals(getIdentity, left, right)
+      : relation
+        ? relation.cardinality === 'many'
+          ? entityCollectionEquals
+          : entityEquals
+        : type.equals ||
+          (getIdentity
+            ? (left: unknown, right: unknown) => identityAwareEquals(getIdentity, left, right)
+            : undefined)) ||
+    defaultValueEquals;
+  const searchText =
+    field.searchText ||
+    (relation
+      ? (value: unknown) => relationSearchText(value, relation.labelField, getIdentity)
+      : type.searchText);
 
   return {
     id: field.id,
     title: field.title,
     valueType,
     path,
+    relation,
+    derivation,
+    capabilities: {
+      search: field.search !== false,
+      filter: Boolean(filter),
+      sort: Boolean(sort),
+      edit: Boolean(edit),
+    },
     transport: {
       ...transport,
       filterKey: transport.filterKey || field.id,
@@ -494,11 +678,11 @@ function resolveField<Row extends object>(
     normalize,
     encodeValue: transport.encodeValue || codec.encode,
     decodeValue: codec.decode,
-    equals: field.equals || type.equals || defaultValueEquals,
-    getIdentity: field.getIdentity || type.getIdentity,
+    equals,
+    getIdentity,
     isEmpty: type.isEmpty || isEmptyValue,
     compare: field.compare || type.compare,
-    searchText: field.searchText || type.searchText,
+    searchText,
     filterPredicate: field.filterPredicate || type.filterPredicate,
     validate: field.validate,
     render: field.render || type.cell,
@@ -559,6 +743,95 @@ function validateNonEmptyStrings(value: unknown, label: string): readonly string
     throw new Error(`${label} cannot contain duplicates.`);
   }
   return value as string[];
+}
+
+function validateFieldRelation(value: unknown, label: string): asserts value is GridFieldRelation {
+  if (!isPlainRecord(value)) throw new Error(`${label} must be an object.`);
+  requireSchemaString(value.target, `${label}.target`);
+  if (value.cardinality !== 'one' && value.cardinality !== 'many') {
+    throw new Error(`${label}.cardinality must be one or many.`);
+  }
+  for (const property of ['keyField', 'labelField'] as const) {
+    if (value[property] !== undefined) {
+      requireSchemaString(value[property], `${label}.${property}`);
+    }
+  }
+}
+
+function validateFieldDerivation(
+  value: unknown,
+  label: string,
+): asserts value is GridFieldDerivation {
+  if (!isPlainRecord(value)) throw new Error(`${label} must be an object.`);
+  if (value.binding !== undefined && value.binding !== 'source' && value.binding !== 'runtime') {
+    throw new Error(`${label}.binding must be source or runtime.`);
+  }
+  if (value.kind === 'formula') {
+    if (!Array.isArray(value.dependencies)) {
+      throw new Error(`${label}.dependencies must be an array of strings.`);
+    }
+    validateNonEmptyStrings(value.dependencies, `${label}.dependencies`);
+    if (value.expression !== undefined) {
+      requireSchemaString(value.expression, `${label}.expression`);
+    }
+    return;
+  }
+  if (value.kind === 'lookup') {
+    requireSchemaString(value.relationField, `${label}.relationField`);
+    requireSchemaString(value.targetField, `${label}.targetField`);
+  } else if (value.kind === 'rollup') {
+    requireSchemaString(value.relationField, `${label}.relationField`);
+    if (value.targetField !== undefined) {
+      requireSchemaString(value.targetField, `${label}.targetField`);
+    }
+    requireSchemaString(value.aggregate, `${label}.aggregate`);
+  } else {
+    throw new Error(`${label}.kind must be formula, lookup or rollup.`);
+  }
+  if (value.dependencies !== undefined) {
+    validateNonEmptyStrings(value.dependencies, `${label}.dependencies`);
+  }
+}
+
+function validateFieldDependencyGraph<Row extends object>(
+  fields: readonly GridAnyResolvedField<Row>[],
+  fieldMap: ReadonlyMap<string, GridAnyResolvedField<Row>>,
+): void {
+  fields.forEach((field) => {
+    if (!field.derivation) return;
+    field.derivation.dependencies.forEach((dependency) => {
+      if (dependency === field.id) {
+        throw new Error(`Derived field "${field.id}" cannot depend on itself.`);
+      }
+      if (!fieldMap.has(dependency)) {
+        throw new Error(`Derived field "${field.id}" depends on unknown field "${dependency}".`);
+      }
+    });
+    if (field.derivation.kind === 'lookup' || field.derivation.kind === 'rollup') {
+      const relation = fieldMap.get(field.derivation.relationField);
+      if (relation?.valueType !== 'relation') {
+        throw new Error(
+          `Derived field "${field.id}" requires relation field "${field.derivation.relationField}".`,
+        );
+      }
+    }
+  });
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (fieldId: string): void => {
+    if (visited.has(fieldId)) return;
+    if (visiting.has(fieldId)) {
+      throw new Error(`Derived field dependency cycle includes "${fieldId}".`);
+    }
+    const field = fieldMap.get(fieldId);
+    if (!field?.derivation) return;
+    visiting.add(fieldId);
+    field.derivation.dependencies.forEach(visit);
+    visiting.delete(fieldId);
+    visited.add(fieldId);
+  };
+  fields.forEach((field) => visit(field.id));
 }
 
 function validatePath(
@@ -669,6 +942,11 @@ function validateResolvedDefinition<Row extends object>(
       typeof field.decodeValue !== 'function' ||
       typeof field.equals !== 'function' ||
       typeof field.isEmpty !== 'function' ||
+      !isPlainRecord(field.capabilities) ||
+      typeof field.capabilities.search !== 'boolean' ||
+      field.capabilities.filter !== Boolean(field.filter) ||
+      field.capabilities.sort !== Boolean(field.sort) ||
+      field.capabilities.edit !== Boolean(field.edit) ||
       !field.codec ||
       typeof field.codec.encode !== 'function' ||
       typeof field.codec.decode !== 'function'
@@ -679,11 +957,21 @@ function validateResolvedDefinition<Row extends object>(
       field as unknown as Record<string, unknown>,
       `Grid field "${field.id}"`,
     );
+    if (field.relation !== undefined) {
+      validateFieldRelation(field.relation, `Relation metadata for field "${field.id}"`);
+      if (field.valueType !== 'relation') {
+        throw new Error(`Relation field "${field.id}" must use the relation value type.`);
+      }
+    }
+    if (field.derivation !== undefined) {
+      validateFieldDerivation(field.derivation, `Derivation for field "${field.id}"`);
+    }
     fieldIds.add(field.id);
   });
   if (definition.fieldMap.size !== fieldIds.size) {
     throw new Error('Resolved grid definition fieldMap is inconsistent with fields.');
   }
+  validateFieldDependencyGraph(definition.fields, definition.fieldMap);
   const columns = flattenColumns(definition.columns);
   const columnIds = new Set<string>();
   columns.forEach((column) => {
@@ -865,6 +1153,21 @@ export function resolveGridDefinition<Row extends object>(
     if (fieldIds.has(field.id)) throw new Error(`Duplicate grid field id: ${field.id}`);
     fieldIds.add(field.id);
     if (field.path !== undefined) validatePath(field.path, `Path for field "${field.id}"`);
+    if (field.search !== undefined && typeof field.search !== 'boolean') {
+      throw new Error(`Grid field "${field.id}" search must be a boolean.`);
+    }
+    if (field.relation !== undefined) {
+      validateFieldRelation(field.relation, `Relation metadata for field "${field.id}"`);
+      if (field.valueType !== undefined && field.valueType !== 'relation') {
+        throw new Error(`Relation field "${field.id}" must use the relation value type.`);
+      }
+    }
+    if (field.derivation !== undefined) {
+      validateFieldDerivation(field.derivation, `Derivation for field "${field.id}"`);
+      if (field.derivation.binding === 'runtime' && typeof field.accessor !== 'function') {
+        throw new Error(`Runtime-derived field "${field.id}" requires an accessor.`);
+      }
+    }
     validateSchemaFieldFeatures(field, `Grid field "${field.id}"`);
     for (const callback of [
       'accessor',
@@ -921,6 +1224,7 @@ export function resolveGridDefinition<Row extends object>(
     return resolveField(field as unknown as GridAnyFieldDefinition<Row>, valueTypes);
   });
   const fieldMap = new Map(fields.map((field) => [field.id, field]));
+  validateFieldDependencyGraph(fields, fieldMap);
   fields.forEach((field) => {
     if (!field.options || Array.isArray(field.options) || typeof field.options === 'function')
       return;
@@ -1142,6 +1446,9 @@ function bindField<Row extends object>(
     path: schema.path,
     accessor: runtimeField.accessor,
     normalize: runtimeField.normalize,
+    search: schema.search,
+    relation: schema.relation,
+    derivation: schema.derivation,
     transport: { ...schema.transport, ...runtimeField.transport },
     filter: schema.filter,
     sort: schema.sort,
@@ -1338,6 +1645,18 @@ export function parseGridSchema(input: unknown): GridSchema {
     if (typeof value.title !== 'string') throw new Error(`${label}.title must be a string.`);
     if (value.valueType !== undefined) requireSchemaString(value.valueType, `${label}.valueType`);
     if (value.path !== undefined) validatePath(value.path, `${label}.path`);
+    if (value.search !== undefined && typeof value.search !== 'boolean') {
+      throw new Error(`${label}.search must be a boolean.`);
+    }
+    if (value.relation !== undefined) {
+      validateFieldRelation(value.relation, `${label}.relation`);
+      if (value.valueType !== undefined && value.valueType !== 'relation') {
+        throw new Error(`${label} relation metadata requires the relation value type.`);
+      }
+    }
+    if (value.derivation !== undefined) {
+      validateFieldDerivation(value.derivation, `${label}.derivation`);
+    }
     if (value.description !== undefined && typeof value.description !== 'string') {
       throw new Error(`${label}.description must be a string.`);
     }
@@ -1411,6 +1730,47 @@ export function parseGridSchema(input: unknown): GridSchema {
       throw new Error(`${label}.meta must be a JSON-safe object.`);
     }
   });
+  const schemaFields = input.fields as Array<Record<string, unknown>>;
+  const schemaFieldMap = new Map(schemaFields.map((field) => [field.id as string, field]));
+  schemaFields.forEach((field) => {
+    const derivation = field.derivation as GridFieldDerivation | undefined;
+    if (!derivation) return;
+    const dependencies = getGridFieldDependencies(derivation);
+    dependencies.forEach((dependency) => {
+      if (dependency === field.id) {
+        throw new Error(`Grid schema derived field "${String(field.id)}" cannot depend on itself.`);
+      }
+      if (!schemaFieldMap.has(dependency)) {
+        throw new Error(
+          `Grid schema derived field "${String(field.id)}" depends on unknown field "${dependency}".`,
+        );
+      }
+    });
+    if (derivation.kind === 'lookup' || derivation.kind === 'rollup') {
+      const relation = schemaFieldMap.get(derivation.relationField);
+      const relationValueType = relation?.valueType || (relation?.relation ? 'relation' : 'text');
+      if (relationValueType !== 'relation') {
+        throw new Error(
+          `Grid schema derived field "${String(field.id)}" requires relation field "${derivation.relationField}".`,
+        );
+      }
+    }
+  });
+  const visitingSchemaFields = new Set<string>();
+  const visitedSchemaFields = new Set<string>();
+  const visitSchemaField = (fieldId: string): void => {
+    if (visitedSchemaFields.has(fieldId)) return;
+    if (visitingSchemaFields.has(fieldId)) {
+      throw new Error(`Grid schema derived field dependency cycle includes "${fieldId}".`);
+    }
+    const derivation = schemaFieldMap.get(fieldId)?.derivation as GridFieldDerivation | undefined;
+    if (!derivation) return;
+    visitingSchemaFields.add(fieldId);
+    getGridFieldDependencies(derivation).forEach(visitSchemaField);
+    visitingSchemaFields.delete(fieldId);
+    visitedSchemaFields.add(fieldId);
+  };
+  schemaFields.forEach((field) => visitSchemaField(field.id as string));
   if (input.columns !== undefined) {
     if (!Array.isArray(input.columns)) throw new Error('Grid schema columns must be an array.');
     const columnIds = new Set<string>();
@@ -1583,6 +1943,9 @@ export function definitionSignature<Row extends object>(
       id: field.id,
       valueType: field.valueType,
       path: field.path,
+      relation: field.relation,
+      derivation: field.derivation,
+      capabilities: field.capabilities,
       transport: {
         filterKey: field.transport.filterKey,
         sortKey: field.transport.sortKey,

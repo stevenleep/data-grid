@@ -75,8 +75,10 @@ const profiles = {
     label: 'React 18 / Ant Design 6 / TypeScript 5.4 lower boundary',
     react: '18.0.0',
     reactDom: '18.0.0',
-    reactTypes: '18.0.0',
-    reactDomTypes: '18.0.0',
+    // Earliest React 18 type packages that export the automatic JSX runtime
+    // and react-dom/client under NodeNext resolution.
+    reactTypes: '18.0.8',
+    reactDomTypes: '18.0.2',
     antd: '6.0.0',
     icons: '6.0.0',
     typescript: '5.4.5',

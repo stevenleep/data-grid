@@ -17,10 +17,13 @@
 
 ### Core
 
-纯 TypeScript，不依赖 React、Ant Design、CSS 或 DOM 运行时。本地持久化只依赖公开的最小 `GridStorageLike` 结构，不引用 DOM `Storage`；异步取消沿用 Web 与现代 Node 共有的标准 `AbortSignal`。Node 服务项目使用匹配运行时的 `@types/node`，浏览器/Worker 项目由相应 platform lib 提供 `AbortSignal`，不需要为了本地存储而额外引入完整 DOM typings。它负责：
+纯 TypeScript，不依赖 React、Ant Design、CSS 或 DOM 运行时。本项目所说的 headless 是“运行时与具体 UI 框架解耦”，不是“定义中绝不出现展示扩展点”：Core 可以携带返回 `GridNode` 的 opaque renderer/editor callback，但不会解释 ReactNode，也不会导入或创建任何 UI。具体渲染和交互仍由 renderer 包负责。
+
+本地持久化只依赖公开的最小 `GridStorageLike` 结构，不引用 DOM `Storage`；异步取消沿用 Web 与现代 Node 共有的标准 `AbortSignal`。Node 服务项目使用匹配运行时的 `@types/node`，浏览器/Worker 项目由相应 platform lib 提供 `AbortSignal`，不需要为了本地存储而额外引入完整 DOM typings。它负责：
 
 - 解析字段和列定义。
 - 维护 query、columns、selection、data、views、editing、actions 七个状态域。
+- 以 `datasetKey` 作为逻辑数据边界；默认重置业务 query、views 与实体状态，通过 `stateDatasetKey` 和窄化的 `datasetTransition` 显式开放跨边界复用。
 - 编译稳定的服务端请求协议。
 - 调度数据源、请求取消、latest-wins、缓存和页码修正。
 - 统一动作并发、错误、刷新和编辑事务。
@@ -32,6 +35,8 @@
 ### AntD
 
 提供官方默认配方和可独立使用的 UI 原子。渲染层通过公开的 `GridInstance` 工作，不把 AntD 类型泄漏进 Core。
+
+AntD renderer 的目标是服务端分页优先的后台列表，不模拟 Excel/Airtable 的区域选区、填充柄或公式计算。需要这些交互时应增加独立 renderer，并复用相同的字段、查询、动作和数据源协议，而不是把平台行为写进 Core。
 
 当前三层使用一个 npm 包和显式子路径。React、React DOM、Ant Design 和图标包都声明为 optional peers：Core-only 消费项目不安装 UI 栈，使用 React/AntD 层的应用则自己选择并安装兼容版本。这是单包形式下的依赖隔离边界；未来只有在版本节奏、团队所有权或安装成本真正需要独立演进时，才应拆为多包。
 

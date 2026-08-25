@@ -1,5 +1,6 @@
 import {
   DataGrid,
+  createControlledSource,
   defineGrid,
   GridProvider,
   type DataGridProps,
@@ -37,6 +38,30 @@ const query: GridQuery = {
 };
 
 const dataGridProps: DataGridProps<Row> = { definition, source: { mode: 'local', rows: [] } };
+const controlledSource = createControlledSource<Row>({
+  datasetKey: 'consumer:orders',
+  resultDatasetKey: 'consumer:orders',
+  result: { rows: [] },
+  error: {
+    value: new Error('consumer error'),
+    requestSignature: 'consumer-request',
+    datasetKey: 'consumer:orders',
+  },
+});
+const dynamicControlledBootstrap = createControlledSource<Row>({
+  result: { rows: [] },
+  onQueryChange: () => undefined,
+});
+const controlledStateProps: DataGridProps<Row> = {
+  definition,
+  source: controlledSource,
+  state: {
+    selection: { mode: 'explicit', selectedKeys: [] },
+  },
+  stateDatasetKey: 'consumer:orders',
+};
+// @ts-expect-error dataset-backed controlled results require explicit provenance.
+createControlledSource<Row>({ datasetKey: 'consumer:orders', result: { rows: [] } });
 const tableProps: GridTableProps<Row> = {};
 const providerProps = null as unknown as GridProviderProps<Row>;
 const paginationState: GridPaginationState = { type: 'offset', page: 1, pageSize: 20 };
@@ -47,6 +72,8 @@ void GridProvider;
 void GridTable;
 void coreDefinition;
 void dataGridProps;
+void controlledStateProps;
+void dynamicControlledBootstrap;
 void paginationState;
 void providerProps;
 void query;

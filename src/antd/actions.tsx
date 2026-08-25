@@ -8,7 +8,7 @@ import {
   Tooltip,
   type ButtonProps,
 } from 'antd';
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, type ReactElement, type ReactNode } from 'react';
 import type {
   GridAction,
   GridActionContext,
@@ -154,7 +154,7 @@ export function GridActionButton<Row extends object>({
   compact,
   buttonProps,
   render,
-}: GridActionButtonProps<Row>) {
+}: GridActionButtonProps<Row>): ReactElement | null {
   const instance = useGridInstance<Row>();
   const key = instance.actions.key(action.id, row);
   const rowKey = row ? instance.definition.getRowKey(row) : undefined;
@@ -204,13 +204,17 @@ export function GridActionButton<Row extends object>({
   };
   if (!visible) return null;
   if (render) {
-    return render({
-      action,
-      loading: state.loading,
-      error: state.error,
-      disabled,
-      run,
-    });
+    return (
+      <>
+        {render({
+          action,
+          loading: state.loading,
+          error: state.error,
+          disabled,
+          run,
+        })}
+      </>
+    );
   }
 
   const content = confirmationFor(action, context);

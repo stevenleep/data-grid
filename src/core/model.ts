@@ -2,6 +2,7 @@ import type {
   GridColumnState,
   GridEvent,
   GridEventReason,
+  GridFieldDerivation,
   GridFilterCondition,
   GridFilterGroup,
   GridFilterOperatorValueKinds,
@@ -235,6 +236,16 @@ export function normalizeError(error: unknown, fallback = 'Unable to load data')
 
 export function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/** Returns normalized local semantic dependencies for a derived field. */
+export function getGridFieldDependencies(derivation: GridFieldDerivation | undefined): string[] {
+  if (!derivation) return [];
+  const dependencies = [...(derivation.dependencies || [])];
+  if (derivation.kind === 'lookup' || derivation.kind === 'rollup') {
+    dependencies.unshift(derivation.relationField);
+  }
+  return uniqueStrings(dependencies);
 }
 
 function stableValue(value: unknown): unknown {

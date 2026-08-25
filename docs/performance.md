@@ -20,15 +20,18 @@ const source = useMemo(() => createRemoteSource(...), [tenantId]);
 
 - `definition.id` 和 `revision` 必须稳定。
 - `rowKey` 必须唯一且跨请求稳定。
-- 避免每次渲染创建不同的 source，除非数据或租户确实变化。
+- `datasetKey` 表示租户/项目/资源边界；`driverKey` 表示 endpoint 或 adapter 语义版本，不要混用。
+- 有稳定 `datasetKey` 时可安全更新 reader closure；传输语义真正变化时提升 `driverKey` 以取消旧请求并隔离缓存。
+- Controlled adapter 的缓存 key 必须包含 `datasetKey`，并把结果/数据集敏感受控状态各自的 `resultDatasetKey` / `stateDatasetKey` 原样回传；不要用对象引用承担来源判断。
 - 事件和 render 回调在必要时使用 `useCallback`。
 
-实例会接受最新 options，但 source 身份变化代表数据语义变化，会清理请求缓存并重新读取。
+实例会接受最新 options。运行时 callback 可以热更新；如果当前编译请求因此变化，Remote/Controlled 会重新请求或发出新协议，Local 搜索/筛选/排序 callback 变化会重新执行当前查询。
 
 ## 请求效率
 
 - debounce 搜索输入，默认搜索组件已处理。
 - 使用 projection 只请求可见字段，但前提是后端真的能获益；通过 definition projection 和 `selectDependencies` 声明 rowKey、计算、权限及 renderer 所需数据。
+- Projection 只优化传输，不削弱 `GridReadResult<Row>` 契约；稀疏接口响应应在 source adapter 中物化为声明的 Row，不能用类型断言伪装成完整实体。
 - facets 和 summary 只在接口支持时开启。
 - 使用 `AbortSignal` 取消 fetch、下载、选项加载和动作请求。
 - 不要在 `read` 内忽略 request，之后又用全量接口在前端二次过滤。

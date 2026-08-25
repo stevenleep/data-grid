@@ -17,7 +17,7 @@
 
 `@huiyun/data-grid/core` 不需要 React、React DOM、Ant Design 或图标包。四个 UI peer 在包元数据中都是 optional，只用 Core 的服务或工具不会被迫安装 UI 栈。使用 `/react`、`/antd` 或根入口时，消费应用必须显式安装它实际使用的 peers。
 
-Core-only 声明分别在 TypeScript 5.4 下界和仓库当前版本中，以 `skipLibCheck: false`、不包含 DOM `lib` 的配置验证。React 18.0/19.0 下界使用对应的精确 `@types/react` / `@types/react-dom` 版本。完整 AntD 消费项目使用 `skipLibCheck: true`，因为 AntD 6/rc-component 当前声明在 React 18 类型下存在上游库内部冲突；这不会跳过消费项目自身或 Data Grid API 的类型检查。必须对所有第三方 `.d.ts` 开启严格库检查的团队，需在锁定 AntD/React/TypeScript 组合前单独验证上游兼容性。
+Core-only 声明分别在 TypeScript 5.4 下界和仓库当前版本中，以 `skipLibCheck: false`、不包含 DOM `lib` 的配置验证。React 18 运行时下界为 18.0.0；NodeNext 自动 JSX 消费使用最早提供所需子路径导出的 `@types/react@18.0.8` 与 `@types/react-dom@18.0.2`。React 19.0 下界使用对应的精确 19.0.0 types。完整 AntD 消费项目使用 `skipLibCheck: true`，因为 AntD 6/rc-component 当前声明在 React 18 类型下存在上游库内部冲突；这不会跳过消费项目自身或 Data Grid API 的类型检查。必须对所有第三方 `.d.ts` 开启严格库检查的团队，需在锁定 AntD/React/TypeScript 组合前单独验证上游兼容性。
 
 旧的 `moduleResolution: "node"` 不理解 `package.json#exports`，因此不支持 `@huiyun/data-grid/core` 等子路径。旧项目应迁移到 `Bundler`、`Node16` 或 `NodeNext`。
 
@@ -95,11 +95,11 @@ Dependabot 只负责提出 npm 和 GitHub Actions 更新 PR，不会自动合并
 Vercel 项目应把 **Root Directory** 设为 `examples/demo`。这样平台会读取该目录中的 `package.json` 和 `vercel.json`：
 
 - Node.js：`24.x`；
-- Install Command：`pnpm install --frozen-lockfile`；
+- Install Command：`npx --yes pnpm@11.13.1 install --frozen-lockfile`；
 - Build Command：`node ../../scripts/assert-node-major.mjs 24 && pnpm build`；
 - Output Directory：`dist`。
 
-还必须在 **Project Settings → Build and Deployment → Node.js Version** 选择 `24.x`，并确认 production branch 是受保护的 `main`。Root Directory 和 production branch 是 Vercel 外部配置，无法由 `vercel.json` 固化；不要因为仓库内存在配置文件就假定线上项目已对齐。
+还必须在 **Project Settings → Build and Deployment** 中确认 **Include source files outside of the Root Directory** 已开启，因为 Demo 会读取仓库根目录的 workspace 包、构建脚本和 `src/`；然后把 **Node.js Version** 设为 `24.x`，并确认 production branch 是受保护的 `main`。安装命令通过 `npx` 精确执行 pnpm 11.13.1，与仓库根 `package.json#packageManager` 一致，不依赖 Vercel 默认 pnpm 或环境是否内置 Corepack。这些都是 Vercel 外部配置，无法由 `vercel.json` 固化；不要因为仓库内存在配置文件就假定线上项目已对齐。
 
 根目录 `vercel.json` 仅用于兼容尚未迁移 Root Directory 的旧项目；它同样在构建前强制 Node 24。新项目和迁移完成的项目以 `examples/demo` 为唯一 Root Directory。
 

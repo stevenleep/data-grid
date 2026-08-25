@@ -8,6 +8,13 @@ const dom = new JSDOM(
   },
 );
 
+// Ant Design probes pseudo-element styles that real browsers implement. jsdom
+// intentionally reports those probes as "not implemented" even though they do
+// not affect this mount/hydration smoke test, so keep the browser-compatible
+// one-argument result without forwarding the unsupported pseudo selector.
+const browserGetComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+dom.window.getComputedStyle = (element) => browserGetComputedStyle(element);
+
 const exposedGlobals = {
   window: dom.window,
   document: dom.window.document,

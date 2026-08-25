@@ -44,6 +44,20 @@ const [query, setQuery] = useState(initialQuery);
 
 只控制业务必须拥有的 slice。完全控制所有 slice 会增加同步成本，也更容易制造过期状态。
 
+`columns` 是可跨数据集复用的显示偏好。`query`、`views`、`data`、`selection`、`editing` 与 `actions` 都可能携带 tenant/project 身份；只要 source 声明了 `datasetKey` 并且 `state` 控制其中任一 slice，就必须同时传入这些 slice 实际所属的 `stateDatasetKey`：
+
+```tsx
+<DataGrid
+  definition={definition}
+  source={source}
+  state={{ query, data, selection }}
+  stateDatasetKey={controlledStateDatasetKey}
+  onStateChange={acceptGridState}
+/>
+```
+
+切换租户/项目时，先保留旧 `stateDatasetKey` 可以让 Core 明确屏蔽旧状态；新数据准备好后，再把新 slice 与新 key 原子写回。不要用对象引用变化暗示来源。非受控状态默认清空业务 query 和 views；可通过 `datasetTransition.preserveQuery` / `preserveViews` 逐项声明可安全复用的域，page size 与 columns 默认保留，分页与实体状态不会隐式保留。
+
 ## Selector 订阅
 
 ```tsx

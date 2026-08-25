@@ -97,6 +97,8 @@ actions: [
 
 显式选择保存 key；all-matching 保存当前查询签名、总数和排除 key，不会把所有 id 拉到浏览器。
 
+如果接口返回 `snapshotId`，进入 all-matching 时 Grid 会一并捕获它，批量 API 应把 `selection.snapshotId` 当作数据版本令牌发送。后续结果仍是同一 snapshot 时可校正 total；snapshot 缺失或变化表示选择范围已经失效，非受控选择会自动清空，避免把旧版本令牌和新版本总数拼成一个不可解释的批量操作。完全受控 selection 由业务承担同样的失效处理。
+
 ## 单元格快捷编辑
 
 ```tsx

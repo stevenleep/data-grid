@@ -43,6 +43,7 @@ import {
 } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
+import { getGridFieldValuesText } from './field-value';
 import { useControllableOpen, useGridOptions } from './hooks';
 import { gridDayjsValue } from './intl';
 import { resolveGridLocale } from './locale';
@@ -157,9 +158,10 @@ function GridFilterValue<Row extends object>({
   );
   const range = valueKind === 'range';
   if (readOnly) {
+    const value = getGridFieldValuesText(condition.value, options.options, field);
     return (
       <span className="hui-grid__filter-readonly-value" aria-label={ariaLabel}>
-        {valueKind === 'none' ? locale.filterNoValue : safeGridText(condition.value, '—')}
+        {valueKind === 'none' ? locale.filterNoValue : value || '—'}
       </span>
     );
   }

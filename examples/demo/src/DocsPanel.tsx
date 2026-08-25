@@ -140,7 +140,9 @@ export function DocsPanel() {
             type="info"
             showIcon
             title="安装"
-            description={<code>pnpm add @huiyun/data-grid antd @ant-design/icons</code>}
+            description={
+              <code>pnpm add @huiyun/data-grid react react-dom antd @ant-design/icons</code>
+            }
           />
           <CodeBlock>{quickStart}</CodeBlock>
         </section>
@@ -148,17 +150,17 @@ export function DocsPanel() {
         <section id="docs-architecture" className="docs-section">
           <Typography.Title level={3}>分层架构</Typography.Title>
           <Row gutter={12}>
-            <Col span={8}>
+            <Col xs={24} md={8}>
               <LayerCard icon={<FunctionOutlined />} title="Core">
                 纯 TypeScript 状态机、查询编译、数据源、动作、编辑和视图。
               </LayerCard>
             </Col>
-            <Col span={8}>
+            <Col xs={24} md={8}>
               <LayerCard icon={<AppstoreOutlined />} title="React">
                 实例生命周期、Provider、事件和细粒度 selector 订阅。
               </LayerCard>
             </Col>
-            <Col span={8}>
+            <Col xs={24} md={8}>
               <LayerCard icon={<ApiOutlined />} title="Ant Design 6">
                 默认完整配方、工具栏、构造器、表格、单元格和页脚。
               </LayerCard>

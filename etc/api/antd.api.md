@@ -6,87 +6,23 @@
 
 import { ButtonProps } from 'antd';
 import { Component } from 'react';
+import { ComponentType } from 'react';
 import { CSSProperties } from 'react';
 import { ErrorInfo } from 'react';
 import { HTMLAttributes } from 'react';
 import { JSX } from 'react';
-import { JSXElementConstructor } from 'react';
 import { Locale } from 'antd/es/locale/index.js';
 import { MouseEvent as MouseEvent_2 } from 'react';
 import { ReactElement } from 'react';
 import { ReactNode } from 'react';
-import { ReactPortal } from 'react';
 import { TableProps } from 'antd';
 import { ThemeConfig } from 'antd';
 
-// @public (undocumented)
-export function addFilterNode(group: GridFilterGroup, parentId: string, node: GridFilterGroup | GridFilterCondition): GridFilterGroup;
-
-// @public (undocumented)
-export function applyLocalGridQuery<Row extends object>(rows: readonly Row[], query: GridQuery, definition: GridResolvedDefinition<Row>, temporal?: GridTemporalContext): GridReadResult<Row>;
-
-// @public (undocumented)
-export function bindGridSchema<Row extends object>(schema: GridSchema, runtime: GridRuntime<Row>, rowKey: GridDefinition<Row>['rowKey']): GridDefinition<Row>;
-
-// @public (undocumented)
-export const builtinValueTypes: GridValueTypeRegistry<object>;
-
-// @public (undocumented)
-export function cloneColumnState(columns: GridColumnState): GridColumnState;
-
-// @public (undocumented)
-export function cloneFilterGroup(group: GridFilterGroup): GridFilterGroup;
-
-// @public (undocumented)
-export function compileGridQuery<Row extends object>(query: GridQuery, definition: GridResolvedDefinition<Row>): GridRequestQuery;
-
-// @public (undocumented)
-export function countFilterConditions(group: GridFilterGroup): number;
-
-// @public (undocumented)
-export function createControlledSource<Row extends object>(source: Omit<GridControlledSource<Row>, 'mode'>): GridControlledSource<Row>;
-
-// @public (undocumented)
-export function createFieldHelper<Row extends object>(): {
-    property<Key extends Extract<keyof Row, string>>(key: Key, options: Omit<GridFieldDefinition<Row, Row[Key]>, "id" | "path" | "accessor">): GridFieldDefinition<Row, Row[Key]>;
-    accessor<Value>(id: string, accessor: (row: Row) => Value, options: Omit<GridFieldDefinition<Row, Value>, "id" | "accessor">): GridFieldDefinition<Row, Value>;
-    path<Value = unknown>(id: string, path: readonly (string | number)[], options: Omit<GridFieldDefinition<Row, Value>, "id" | "path">): GridFieldDefinition<Row, Value>;
-    display(id: string, options: Omit<GridColumnDefinition<Row>, "id" | "fieldId">): GridColumnDefinition<Row>;
-};
-
-// @public (undocumented)
-export function createFilterCondition(fieldId: string, operator: GridFilterCondition['operator'], value?: GridJsonValue): GridFilterCondition;
-
-// @public (undocumented)
-export function createFilterGroup(logic?: GridFilterGroup['logic'], children?: GridFilterGroup['children']): GridFilterGroup;
-
-// @public (undocumented)
-export function createGrid<Row extends object>(options: GridOptions<Row>): GridInstance<Row>;
-
-// @public (undocumented)
-export function createGridEvent(type: string, reason?: GridEventReason, detail?: Record<string, unknown>): GridEvent;
-
-// @public (undocumented)
-export function createLocalGridPersistence<Row extends object = object>(options?: LocalGridPersistenceOptions): GridPersistence<Row>;
-
-// @public (undocumented)
-export function createLocalSource<Row extends object>(rows: readonly Row[], capabilities?: GridCapabilities, datasetKey?: string): GridLocalSource<Row>;
-
-// @public (undocumented)
-export function createRemoteSource<Row extends object>(source: Omit<GridRemoteSource<Row>, 'mode'>): GridRemoteSource<Row>;
-
-// @public (undocumented)
-export function createRemoteSource<Row extends object>(read: GridRemoteSource<Row>['read'], options?: {
-    datasetKey?: string;
-    capabilities?: GridCapabilities;
-    policy?: GridRemoteSource<Row>['policy'];
-}): GridRemoteSource<Row>;
-
-// @public (undocumented)
+// @public
 export function DataGrid<Row extends object>(props: DataGridProps<Row>): JSX.Element;
 
-// @public (undocumented)
-export interface DataGridProps<Row extends object> extends GridOptions<Row>, GridUiConfig<Row> {
+// @public
+export interface DataGridPresentationProps<Row extends object> extends GridUiConfig<Row> {
     // (undocumented)
     afterTable?: ReactNode;
     // (undocumented)
@@ -102,46 +38,46 @@ export interface DataGridProps<Row extends object> extends GridOptions<Row>, Gri
     // (undocumented)
     rowActions?: false | GridRowActionsConfig;
     // (undocumented)
+    slots?: DataGridSlots<Row>;
+    // (undocumented)
     style?: CSSProperties;
     // (undocumented)
     toolbar?: false | GridToolbarFeatures;
 }
 
 // @public (undocumented)
-export function defineGrid<Row extends object>(definition: GridDefinition<Row>): GridDefinition<Row>;
+export interface DataGridProps<Row extends object> extends GridOptions<Row>, DataGridPresentationProps<Row> {}
+
+// @public
+export type DataGridSlot<Row extends object> = ReactNode | DataGridSlotRenderer<Row>;
+
+// @public
+export type DataGridSlotRenderer<Row extends object> = (defaultContent: ReactNode, instance: GridInstance<Row>) => ReactNode;
 
 // @public (undocumented)
-export function defineGridFields<Row extends object>(fields: readonly GridAnyFieldDefinition<Row>[]): readonly GridAnyFieldDefinition<Row>[];
+export interface DataGridSlots<Row extends object> {
+    // (undocumented)
+    activeFilters?: DataGridSlot<Row>;
+    // (undocumented)
+    footer?: DataGridSlot<Row>;
+    // (undocumented)
+    status?: DataGridSlot<Row>;
+    // (undocumented)
+    table?: DataGridSlot<Row>;
+    // (undocumented)
+    toolbar?: DataGridSlot<Row>;
+}
+
+// @public
+export function DataGridView<Row extends object>(props: DataGridViewProps<Row>): JSX.Element;
 
 // @public (undocumented)
-export function defineGridRuntime<Row extends object>(runtime: GridRuntime<Row>): GridRuntime<Row>;
-
-// @public (undocumented)
-export function defineGridSchema<const Schema extends GridSchema>(schema: Schema): Schema;
-
-// @public (undocumented)
-export function defineGridValueType<Row extends object, Value>(valueType: GridValueTypeDefinition<Row, Value>): GridValueTypeDefinition<Row, Value>;
+export interface DataGridViewProps<Row extends object> extends DataGridPresentationProps<Row> {
+    grid: GridInstance<Row>;
+}
 
 // @public (undocumented)
 export const enUS: GridLocale;
-
-// @public (undocumented)
-export function filterConditionIsComplete(condition: GridFilterCondition, kind?: GridFilterValueKind): boolean;
-
-// @public (undocumented)
-export function getFilterDepth(group: GridFilterGroup): number;
-
-// @public (undocumented)
-export function getFilterOperatorValueKind(operator: GridFilterCondition['operator'], overrides?: GridFilterOperatorValueKinds): GridFilterValueKind;
-
-// @public (undocumented)
-export function getPathValue(value: unknown, path: GridPath): unknown;
-
-// @public (undocumented)
-export function getRequestScopeSignature(request: GridRequestQuery): string;
-
-// @public (undocumented)
-export function getRequestSignature(request: GridRequestQuery): string;
 
 // @public (undocumented)
 export interface GridAction<Row extends object> {
@@ -174,7 +110,7 @@ export interface GridAction<Row extends object> {
 }
 
 // @public (undocumented)
-export function GridActionButton<Row extends object>(input: GridActionButtonProps<Row>): string | number | bigint | boolean | JSX.Element | Iterable<ReactNode> | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined;
+export function GridActionButton<Row extends object>(input: GridActionButtonProps<Row>): ReactElement | null;
 
 // @public (undocumented)
 export interface GridActionButtonProps<Row extends object> {
@@ -357,7 +293,7 @@ export interface GridCapabilities {
 }
 
 // @public (undocumented)
-export function GridCell<Row extends object>(input: GridCellProps<Row>): ReactNode;
+export function GridCell<Row extends object>(input: GridCellProps<Row>): ReactElement;
 
 // @public (undocumented)
 export interface GridCellClickContext<Row extends object> extends GridCellInteractionContext<Row> {
@@ -378,6 +314,12 @@ export interface GridCellContext<Row extends object, Value = unknown> {
     // (undocumented)
     value: Value;
 }
+
+// @public
+export type GridCellEditorComponent<Row extends object, Value = unknown> = ComponentType<GridEditorContext<Row, Value>>;
+
+// @public
+export type GridCellEditorRegistry<Row extends object> = Readonly<Record<string, GridCellEditorComponent<Row, any>>>;
 
 // @public (undocumented)
 export interface GridCellInteractionContext<Row extends object> extends GridRowInteractionContext<Row> {
@@ -401,6 +343,12 @@ export interface GridCellProps<Row extends object> {
 
 // @public (undocumented)
 export type GridCellRenderer<Row extends object, Value = unknown> = (context: GridCellContext<Row, Value>) => GridNode;
+
+// @public
+export type GridCellRendererComponent<Row extends object, Value = unknown> = ComponentType<GridCellContext<Row, Value>>;
+
+// @public
+export type GridCellRendererRegistry<Row extends object> = Readonly<Record<string, GridCellRendererComponent<Row, any>>>;
 
 // @public (undocumented)
 export interface GridColumnCellContext<Row extends object> {
@@ -555,25 +503,32 @@ export interface GridColumnTriggerProps {
     }) => ReactNode);
 }
 
-// @public (undocumented)
-export interface GridControlledSource<Row extends object> {
-    // (undocumented)
-    capabilities?: GridCapabilities;
+// @public
+export interface GridControlledError {
     // (undocumented)
     datasetKey?: string;
     // (undocumented)
-    error?: unknown;
+    requestSignature: string;
     // (undocumented)
-    loading?: boolean;
-    // (undocumented)
-    mode: 'controlled';
-    // (undocumented)
-    onQueryChange?: (query: GridQuery, request: GridRequestQuery, event: GridEvent) => void;
-    // (undocumented)
-    refreshing?: boolean;
-    // (undocumented)
-    result: GridReadResult<Row>;
+    value: unknown;
 }
+
+// @public (undocumented)
+export type GridControlledSource<Row extends object> = GridControlledSourceOptions<Row> & {
+    mode: 'controlled';
+};
+
+// Warning: (ae-forgotten-export) The symbol "GridControlledDatasetOptions" needs to be exported by the entry point antd.d.mts
+//
+// @public (undocumented)
+export type GridControlledSourceOptions<Row extends object> = {
+    result: GridReadResult<Row>;
+    resultRequestSignature?: string;
+    loading?: boolean;
+    refreshing?: boolean;
+    capabilities?: GridCapabilities;
+    onQueryChange?: (query: GridQuery, request: GridRequestQuery, event: GridEvent) => void;
+} & GridControlledDatasetOptions;
 
 // @public (undocumented)
 export interface GridCursorPagination {
@@ -599,6 +554,17 @@ export interface GridDataApi<Row extends object> {
     updateRow: (key: GridRowKey, row: Row) => void;
 }
 
+// @public
+export type GridDatasetQuerySlice = 'keyword' | 'filters' | 'sorts' | 'context' | 'projection';
+
+// @public
+export interface GridDatasetTransitionOptions {
+    // (undocumented)
+    preserveQuery?: boolean | readonly GridDatasetQuerySlice[];
+    // (undocumented)
+    preserveViews?: boolean;
+}
+
 // @public (undocumented)
 export type GridDataSource<Row extends object> = GridRemoteSource<Row> | GridLocalSource<Row> | GridControlledSource<Row>;
 
@@ -608,13 +574,18 @@ export interface GridDataState<Row extends object> extends GridReadResult<Row> {
     error?: Error;
     // (undocumented)
     fetching: boolean;
+    placeholder?: boolean;
     // (undocumented)
     requestId?: number;
+    requestSignature?: string;
     // (undocumented)
     status: 'idle' | 'loading' | 'success' | 'error';
     // (undocumented)
     updatedAt?: number;
 }
+
+// @public (undocumented)
+export type GridDefaultEditorType = 'text' | 'longText' | 'number' | 'decimal' | 'money' | 'percent' | 'boolean' | 'select' | 'multiSelect' | 'status' | 'date' | 'dateTime' | 'duration' | 'link' | 'email' | 'phone' | 'user' | 'relation' | 'json';
 
 // @public (undocumented)
 export function GridDefaultFooter<Row extends object>(input?: GridDefaultFooterProps): JSX.Element;
@@ -669,7 +640,7 @@ export function GridDensityMenu<Row extends object>(input: {
 }): JSX.Element;
 
 // @public (undocumented)
-export function GridEditableCell<Row extends object>(input: GridEditableCellProps<Row>): string | number | bigint | boolean | JSX.Element | Iterable<ReactNode> | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined;
+export function GridEditableCell<Row extends object>(input: GridEditableCellProps<Row>): ReactElement;
 
 // @public (undocumented)
 export interface GridEditableCellProps<Row extends object> extends GridCellProps<Row> {
@@ -796,6 +767,18 @@ export interface GridFeatureDefaults {
     views?: boolean;
 }
 
+// @public
+export interface GridFieldCapabilities {
+    // (undocumented)
+    readonly edit: boolean;
+    // (undocumented)
+    readonly filter: boolean;
+    // (undocumented)
+    readonly search: boolean;
+    // (undocumented)
+    readonly sort: boolean;
+}
+
 // @public (undocumented)
 export interface GridFieldDefinition<Row extends object, Value = unknown> {
     // (undocumented)
@@ -804,6 +787,8 @@ export interface GridFieldDefinition<Row extends object, Value = unknown> {
     column?: false | GridColumnDisplay;
     // (undocumented)
     compare?: GridValueTypeDefinition<Row, Value>['compare'];
+    // (undocumented)
+    derivation?: GridFieldDerivation;
     // (undocumented)
     description?: GridNode;
     // (undocumented)
@@ -831,7 +816,10 @@ export interface GridFieldDefinition<Row extends object, Value = unknown> {
     // (undocumented)
     path?: GridPath;
     // (undocumented)
+    relation?: GridFieldRelation;
+    // (undocumented)
     render?: GridCellRenderer<Row, Value>;
+    search?: boolean;
     // (undocumented)
     searchText?: GridValueTypeDefinition<Row, Value>['searchText'];
     // (undocumented)
@@ -845,6 +833,12 @@ export interface GridFieldDefinition<Row extends object, Value = unknown> {
     // (undocumented)
     valueType?: GridValueType;
 }
+
+// @public
+export type GridFieldDerivation = GridFormulaDerivation | GridLookupDerivation | GridRollupDerivation;
+
+// @public
+export type GridFieldDerivationBinding = 'source' | 'runtime';
 
 // @public (undocumented)
 export interface GridFieldEdit {
@@ -875,6 +869,29 @@ export interface GridFieldFilter {
 
 // @public (undocumented)
 export type GridFieldOptions<Row extends object> = GridOption[] | GridOptionLoader<Row> | GridOptionProvider<Row>;
+
+// @public (undocumented)
+export interface GridFieldOptionsResult {
+    // (undocumented)
+    error?: Error;
+    // (undocumented)
+    loading: boolean;
+    // (undocumented)
+    options: GridOption[];
+    reload: () => void;
+}
+
+// @public
+export interface GridFieldRelation {
+    // (undocumented)
+    readonly cardinality: 'one' | 'many';
+    // (undocumented)
+    readonly keyField?: string;
+    // (undocumented)
+    readonly labelField?: string;
+    // (undocumented)
+    readonly target: string;
+}
 
 // @public (undocumented)
 export interface GridFieldRenderContext<Row extends object> extends GridRenderContext<Row> {
@@ -919,6 +936,8 @@ export interface GridFieldSchema {
     // (undocumented)
     column?: false | GridColumnDisplay;
     // (undocumented)
+    derivation?: GridFieldDerivation;
+    // (undocumented)
     description?: string;
     // (undocumented)
     edit?: boolean | GridFieldEdit;
@@ -945,7 +964,10 @@ export interface GridFieldSchema {
     // (undocumented)
     path?: GridPath;
     // (undocumented)
+    relation?: GridFieldRelation;
+    // (undocumented)
     renderer?: string;
+    search?: boolean;
     // (undocumented)
     sort?: boolean | GridFieldSort;
     // (undocumented)
@@ -1118,6 +1140,16 @@ export interface GridFooterProps extends Omit<HTMLAttributes<HTMLDivElement>, 'c
 }
 
 // @public (undocumented)
+export interface GridFormulaDerivation {
+    // (undocumented)
+    readonly binding?: GridFieldDerivationBinding;
+    readonly dependencies: readonly string[];
+    readonly expression?: string;
+    // (undocumented)
+    readonly kind: 'formula';
+}
+
+// @public (undocumented)
 export interface GridInitialState<Row extends object> {
     // (undocumented)
     columns?: Partial<GridColumnState>;
@@ -1134,7 +1166,7 @@ export interface GridInitialState<Row extends object> {
 }
 
 // @public (undocumented)
-export interface GridInstance<Row extends object> {
+export interface GridInstance<Row extends object> extends GridRuntimeObservable {
     // (undocumented)
     readonly actions: GridActionsApi<Row>;
     // (undocumented)
@@ -1343,6 +1375,17 @@ export interface GridLocalSource<Row extends object> {
 }
 
 // @public (undocumented)
+export interface GridLookupDerivation {
+    // (undocumented)
+    readonly binding?: GridFieldDerivationBinding;
+    readonly dependencies?: readonly string[];
+    // (undocumented)
+    readonly kind: 'lookup';
+    readonly relationField: string;
+    readonly targetField: string;
+}
+
+// @public (undocumented)
 export type GridNode = unknown;
 
 // @public (undocumented)
@@ -1401,6 +1444,7 @@ export interface GridOptionProvider<Row extends object> {
 
 // @public (undocumented)
 export interface GridOptions<Row extends object> {
+    datasetTransition?: GridDatasetTransitionOptions;
     // (undocumented)
     defaultState?: GridInitialState<Row>;
     // (undocumented)
@@ -1415,6 +1459,7 @@ export interface GridOptions<Row extends object> {
     source: GridDataSource<Row>;
     // (undocumented)
     state?: Partial<GridState<Row>>;
+    stateDatasetKey?: string;
     // (undocumented)
     temporal?: GridTemporalContext;
 }
@@ -1622,6 +1667,7 @@ export interface GridRemoteSource<Row extends object> {
     // (undocumented)
     capabilities?: GridCapabilities;
     datasetKey?: string;
+    driverKey?: string | number;
     // (undocumented)
     mode: 'remote';
     // (undocumented)
@@ -1794,11 +1840,15 @@ export interface GridResolvedDefinition<Row extends object> extends Omit<GridDef
 // @public (undocumented)
 export interface GridResolvedField<Row extends object, Value = unknown> {
     // (undocumented)
+    capabilities: GridFieldCapabilities;
+    // (undocumented)
     codec: GridValueCodec<Value>;
     // (undocumented)
     compare?: GridValueTypeDefinition<Row, Value>['compare'];
     // (undocumented)
     decodeValue: (value: GridJsonValue | undefined) => Value;
+    // (undocumented)
+    derivation?: GridResolvedFieldDerivation;
     // (undocumented)
     description?: GridNode;
     // (undocumented)
@@ -1832,6 +1882,8 @@ export interface GridResolvedField<Row extends object, Value = unknown> {
     // (undocumented)
     path: GridPath;
     // (undocumented)
+    relation?: GridFieldRelation;
+    // (undocumented)
     render?: GridCellRenderer<Row, Value>;
     // (undocumented)
     searchText?: GridValueTypeDefinition<Row, Value>['searchText'];
@@ -1845,6 +1897,28 @@ export interface GridResolvedField<Row extends object, Value = unknown> {
     validate?: GridFieldDefinition<Row, Value>['validate'];
     // (undocumented)
     valueType: GridValueType;
+}
+
+// @public (undocumented)
+export type GridResolvedFieldDerivation = GridFieldDerivation & {
+    readonly dependencies: readonly string[];
+    readonly binding: GridFieldDerivationBinding;
+};
+
+// @public (undocumented)
+export type GridRollupAggregate = 'count' | 'countDistinct' | 'sum' | 'average' | 'min' | 'max' | (string & {});
+
+// @public (undocumented)
+export interface GridRollupDerivation {
+    // (undocumented)
+    readonly aggregate: GridRollupAggregate;
+    // (undocumented)
+    readonly binding?: GridFieldDerivationBinding;
+    readonly dependencies?: readonly string[];
+    // (undocumented)
+    readonly kind: 'rollup';
+    readonly relationField: string;
+    readonly targetField?: string;
 }
 
 // @public (undocumented)
@@ -1900,6 +1974,14 @@ export interface GridRuntime<Row extends object> {
     renderers?: Record<string, GridCellRenderer<Row>>;
     // (undocumented)
     valueTypes?: GridValueTypeRegistry<Row>;
+}
+
+// @public
+export interface GridRuntimeObservable {
+    // (undocumented)
+    getRuntimeRevision: () => number;
+    // (undocumented)
+    subscribeRuntime: (listener: () => void) => () => void;
 }
 
 // @public (undocumented)
@@ -1983,6 +2065,7 @@ export type GridSelectionState = {
 } | {
     mode: 'allMatching';
     querySignature: string;
+    snapshotId?: string;
     excludedKeys: GridRowKey[];
     total: number;
 };
@@ -2228,6 +2311,10 @@ export interface GridUiConfig<Row extends object> {
     // (undocumented)
     antdLocale?: Locale;
     // (undocumented)
+    cellEditors?: GridCellEditorRegistry<Row>;
+    // (undocumented)
+    cellRenderers?: GridCellRendererRegistry<Row>;
+    // (undocumented)
     isCellClickable?: (context: GridCellInteractionContext<Row>) => boolean;
     // (undocumented)
     isRowClickable?: (context: GridRowInteractionContext<Row>) => boolean;
@@ -2398,12 +2485,6 @@ export interface GridViewTriggerProps {
 }
 
 // @public (undocumented)
-export function isEmptyValue(value: unknown): boolean;
-
-// @public (undocumented)
-export function isGridJsonValue(value: unknown): value is GridJsonValue;
-
-// @public (undocumented)
 export interface LocalGridPersistenceOptions {
     identity?: string;
     // (undocumented)
@@ -2415,49 +2496,10 @@ export interface LocalGridPersistenceOptions {
 }
 
 // @public (undocumented)
-export function mapGridQueryFields<Row extends object>(query: GridQuery, definition: GridResolvedDefinition<Row>): GridRequestQuery;
-
-// @public (undocumented)
-export function matchesGridCondition<Row extends object>(row: Row, field: GridResolvedField<Row>, condition: GridFilterCondition, temporal?: GridTemporalContext): boolean;
-
-// @public (undocumented)
-export function matchesGridFilters<Row extends object>(row: Row, group: GridFilterGroup, fieldMap: ReadonlyMap<string, GridResolvedField<Row>>, temporal?: GridTemporalContext): boolean;
-
-// @public (undocumented)
-export function moveFilterNode(group: GridFilterGroup, parentId: string, from: number, to: number): GridFilterGroup;
-
-// @public (undocumented)
-export function normalizeFilterValue(value: unknown): GridJsonValue | undefined;
-
-// @public (undocumented)
-export function normalizeGridOptions(input: unknown, label?: string): GridOption[];
-
-// @public (undocumented)
-export function normalizeGridResult<Row extends object>(result: GridReadResult<Row>, pagination?: GridPaginationState): GridReadResult<Row>;
-
-// @public (undocumented)
 export const noValueOperators: Set<GridFilterOperator>;
 
 // @public (undocumented)
 export function operatorLabel(operator: GridFilterOperator, language?: string): string;
-
-// @public
-export function parseGridPersistedState(input: unknown): GridPersistedState;
-
-// @public
-export function parseGridSchema(input: unknown): GridSchema;
-
-// @public
-export function pruneEmptyFilterGroups(group: GridFilterGroup): GridFilterGroup;
-
-// @public (undocumented)
-export function pruneFilterGroup(group: GridFilterGroup, resolveValueKind?: GridFilterValueKindResolver): GridFilterGroup;
-
-// @public (undocumented)
-export function queryWithoutPagination(query: GridQuery): Omit<GridQuery, 'pagination'>;
-
-// @public (undocumented)
-export function removeFilterNode(group: GridFilterGroup, nodeId: string): GridFilterGroup;
 
 // @public
 export function renderGridNode(value: unknown): ReactNode;
@@ -2466,34 +2508,22 @@ export function renderGridNode(value: unknown): ReactNode;
 export function renderGridValue<Row extends object>(value: unknown, field: GridResolvedField<Row>, locale: string, timeZone?: string, labels?: Pick<GridLocale, 'trueLabel' | 'falseLabel'>): ReactNode;
 
 // @public (undocumented)
-export function resolveGridCapabilities<Row extends object>(source: GridDataSource<Row>): GridResolvedCapabilities;
-
-// @public (undocumented)
-export function resolveGridDefinition<Row extends object>(definition: GridDefinition<Row> | GridResolvedDefinition<Row>): GridResolvedDefinition<Row>;
-
-// @public (undocumented)
 export function resolveGridLocale(locale?: Partial<GridLocale>, language?: string): GridLocale;
 
 // @public (undocumented)
 export function safeGridText(value: unknown, fallback?: string): string;
 
-// @public (undocumented)
-export function serializeGridQuery(query: GridQuery): GridJsonValue;
+// @public
+export function supportsGridDefaultEditor(editor: string): editor is GridDefaultEditorType;
 
 // @public (undocumented)
-export function stableStringify(value: unknown): string;
+export function useGridFieldOptions<Row extends object>(field: GridResolvedField<Row> | undefined, search?: string, enabled?: boolean): GridFieldOptionsResult;
 
-// @public (undocumented)
-export function updateFilterNode(group: GridFilterGroup, nodeId: string, update: (node: GridFilterGroup | GridFilterCondition) => GridFilterGroup | GridFilterCondition): GridFilterGroup;
+// @public @deprecated (undocumented)
+export function useGridOptions<Row extends object>(field: GridResolvedField<Row> | undefined, search?: string, enabled?: boolean): GridFieldOptionsResult;
 
 // @public (undocumented)
 export function useGridUi<Row extends object>(): GridUiConfig<Row>;
-
-// @public (undocumented)
-export function validateGridQuery<Row extends object>(query: GridQuery, definition: GridResolvedDefinition<Row>, capabilities: GridResolvedCapabilities): void;
-
-// @public (undocumented)
-export function validateGridTemporalContext(temporal: GridTemporalContext | undefined): void;
 
 // @public (undocumented)
 export const zhCN: GridLocale;

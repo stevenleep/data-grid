@@ -27,7 +27,7 @@
 - `parseGridSchema`（不可信 `unknown` 的协议边界）
 - `builtinValueTypes`
 
-核心类型：`GridDefinition`、`GridProjectionDefinition`、`GridFieldDefinition`、`GridColumnDefinition`、`GridValueTypeDefinition`、`GridAnyValueTypeDefinition`、`GridValueTypeRegistry`、`GridSchema`、`GridRuntime`。
+核心类型：`GridDefinition`、`GridProjectionDefinition`、`GridFieldDefinition`、`GridFieldCapabilities`、`GridFieldRelation`、`GridFieldDerivation`、`GridColumnDefinition`、`GridValueTypeDefinition`、`GridAnyValueTypeDefinition`、`GridValueTypeRegistry`、`GridSchema`、`GridRuntime`。
 
 字段和自定义值类型的业务 callback 应分别通过 `createFieldHelper<Row>()` 与 `defineGridValueType<Row, Value>()` 建立精确类型。`GridAnyValueTypeDefinition` 中的 `any` 只用于框架内部保存不同 Value 的 registry 边界，不是建议业务 callback 使用的公共建模方式。
 
@@ -40,7 +40,7 @@
 - `normalizeGridResult`
 - `normalizeGridOptions`（不可信选项/facet 的协议边界）
 
-核心类型：`GridDataSource`、`GridReadInput`、`GridReadResult`、`GridCapabilities`、`GridTotalValue`、`GridPageInfo`。根入口用 `GridTotalValue` 避免与同名 UI 组件冲突；`/core` 入口仍导出原名 `GridTotal`。
+核心类型：`GridDataSource`、`GridControlledSourceOptions`、`GridControlledError`、`GridReadInput`、`GridReadResult`、`GridCapabilities`、`GridDatasetTransitionOptions`、`GridDatasetQuerySlice`、`GridTotalValue`、`GridPageInfo`。Controlled 的动态结果使用 `resultRequestSignature`，失败使用 `{ value, requestSignature, datasetKey? }` envelope，Core 只接收与当前请求和数据集匹配的 payload。`GridOptions.stateDatasetKey` 标记数据集敏感受控状态的来源，`datasetTransition` 只开放业务明确允许跨数据集复用的 query/view 域。根入口用 `GridTotalValue` 避免与同名 UI 组件冲突；`/core` 入口仍导出原名 `GridTotal`。
 
 ## 查询
 
@@ -85,6 +85,7 @@ await instance.flushPersistence(); // flush debounced and queued preference writ
 ## 默认组件
 
 - `DataGrid`
+- `DataGridView`（只渲染外部持有的实例）
 - `GridDefaultToolbar`
 - `GridDefaultFooter`
 - `GridShell`
@@ -119,9 +120,11 @@ await instance.flushPersistence(); // flush debounced and queued preference writ
 - `GridCell`
 - `GridEditableCell`
 - `renderGridValue`
+- `supportsGridDefaultEditor`
+- `useGridFieldOptions`（兼容别名 `useGridOptions`）
 - `GridRenderErrorBoundary`（函数 fallback 的第二参数可重置 boundary）
 
-交互类型：`GridRowClickContext`、`GridCellClickContext`、`GridRowInteractionContext`、`GridCellInteractionContext`、`GridRowActionsConfig`、`GridTableSelectionProps`。自定义组合可通过 `GridUiConfig.onRenderError` 统一接收 renderer/boundary 错误。
+交互与扩展类型：`GridRowClickContext`、`GridCellClickContext`、`GridRowInteractionContext`、`GridCellInteractionContext`、`GridRowActionsConfig`、`GridTableSelectionProps`、`DataGridSlots`、`GridCellRendererRegistry`、`GridCellEditorRegistry`。自定义组合可通过 `GridUiConfig.onRenderError` 统一接收 renderer/boundary 错误。
 
 ## DataGrid 常用 Props
 
@@ -131,8 +134,10 @@ await instance.flushPersistence(); // flush debounced and queued preference writ
 | `source`                                | Local、Remote 或 Controlled 数据源  |
 | `defaultState` / `state`                | 非受控初值或受控 slice              |
 | `persistence`                           | 本地或服务端偏好协议                |
-| `temporal`                              | Local 相对日期的时区、周起始与时钟  |
+| `temporal`                              | Local 日历日期/相对日期的时区与时钟 |
 | `toolbar` / `footer`                    | 默认配方能力开关                    |
+| `slots`                                 | 替换或包裹五个稳定默认布局区域      |
+| `cellRenderers` / `cellEditors`         | 按 valueType/editor key 注册组件    |
 | `rowActions`                            | 行操作可见数量、宽度和标题          |
 | `onRowClick` / `onCellClick`            | 语义交互回调                        |
 | `isRowClickable` / `isCellClickable`    | 点击能力判断和视觉提示              |

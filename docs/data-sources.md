@@ -26,6 +26,7 @@ Remote 是后台管理列表的默认选择。
 ```ts
 const source = createRemoteSource<Order>({
   datasetKey: `${tenantId}:orders`,
+  driverKey: 'orders-api:v2',
   capabilities,
   policy: {
     keepPreviousData: true,
@@ -71,24 +72,69 @@ const source = createRemoteSource<Order>({
 
 没有 `datasetKey` 时，Remote source 会把 `read` 函数身份作为保守的数据集边界。不要在每次 React render 中创建一个语义相同但引用不同的内联 `read`；应把 source/reader 提到稳定作用域、用 `useMemo/useCallback` 保持引用，或直接提供稳定 `datasetKey`。
 
-`datasetKey` 变化会使旧请求、请求/选项缓存、结果、选择、编辑和动作与新数据集隔离，并在非受控查询中重置页码。Local、Remote 和 Controlled 模式都支持该字段。受控实体 slice 如果仍回传上一数据集的同一引用，Core 会暂时屏蔽它们并通过 `dataset.controlled.reset` 发出清空意图；业务接受后应回写新数据集的状态。这样即使两个租户都存在相同 row key，旧选择或编辑草稿也不会落到新实体上。
+`datasetKey` 变化会取消旧请求与动作，清理请求/选项缓存，并隔离结果、选择和编辑。Local、Remote 和 Controlled 模式都支持该字段。Grid 自己管理状态时，默认清空 `keyword`、filters、sorts、context、projection、保存视图与全部实体状态；page size 和 columns 属于可安全复用的显示偏好，分页则回到第一页或初始 cursor。这样 tenant A 的筛选 id、context 和 private view 不会被发送给 tenant B 的 reader。
 
-`datasetKey` 是客户端身份键，不是授权令牌；服务端仍必须校验租户与行权限。不要在数据集切换后故意复制并回传旧实体状态；引用隔离是竞态保护，不替代业务正确地按数据集管理受控状态。
+只有经过业务确认与数据集无关的状态才应显式保留：
+
+```tsx
+<DataGrid
+  {...props}
+  datasetTransition={{
+    preserveQuery: ['keyword', 'context'],
+    preserveViews: true,
+  }}
+/>
+```
+
+`preserveQuery: true` 保留全部非分页查询域；数组只保留列出的域。`preserveViews` 保留 view definitions，但会解除旧 active view，避免自动应用旧查询。分页和实体状态没有隐式保留开关；业务若确实要接管它们，应通过受控 state 明确写入属于新数据集的状态。
+
+若 `state` 控制 `query`、`views`、`data`、`selection`、`editing` 或 `actions`，必须用 `stateDatasetKey` 标明这些 slice 实际属于哪个数据集。切换期间 key 不匹配的 slice 会被屏蔽，Core 通过 `dataset.controlled.reset` 发出清空意图；业务准备好新状态后，应把新 slice 与新的 `stateDatasetKey` 原子回写。`columns` 是唯一不要求该来源键的受控偏好。对象是否被克隆不会绕过这条边界。
+
+`datasetKey` 是客户端身份键，不是授权令牌；服务端仍必须校验租户与行权限。来源标记用于关闭客户端竞态窗口，不替代后端正确地按租户授权和返回数据。
+
+`driverKey` 与 `datasetKey` 是两个不同维度。前者表示 endpoint、鉴权上下文版本或 adapter 语义；改变它会取消旧请求、清理请求缓存并重新读取，但保留同一逻辑数据集的 query、选择和用户偏好。只更新 React render 中的 reader closure 不需要改变 `driverKey`；只有底层传输语义真的变化时才提升它。
 
 ## Controlled
 
-当数据已经由 React Query、SWR、路由 Loader 或业务 Store 管理时使用。
+当数据已经由 React Query、SWR、Alova、路由 Loader 或业务 Store 管理时使用。
 
 ```tsx
-const source = createControlledSource<Order>({
-  datasetKey: `${tenantId}:orders`,
-  result: {
-    rows: query.data?.items ?? [],
-    total: query.data ? { value: query.data.total, accuracy: 'exact' } : undefined,
+const datasetKey = `${tenantId}:orders`;
+const signature = getRequestSignature(request);
+const query = useQuery({
+  queryKey: ['orders', datasetKey, signature],
+  queryFn: async () => {
+    const response = await api.orders.list(request);
+    return {
+      datasetKey,
+      requestSignature: signature,
+      result: {
+        rows: response.items,
+        total: { value: response.total, accuracy: 'exact' as const },
+      },
+    };
   },
+});
+const envelope = query.data ?? {
+  datasetKey,
+  requestSignature: signature,
+  result: { rows: [] as Order[] },
+};
+
+const source = createControlledSource<Order>({
+  datasetKey,
+  resultDatasetKey: envelope.datasetKey,
+  result: envelope.result,
+  resultRequestSignature: envelope.requestSignature,
   loading: query.isLoading,
   refreshing: query.isFetching && !query.isLoading,
-  error: query.error,
+  error: query.error
+    ? {
+        value: query.error,
+        datasetKey,
+        requestSignature: signature,
+      }
+    : undefined,
   capabilities,
   onQueryChange: (_query, request, event) => {
     setRequest(request);
@@ -99,6 +145,14 @@ const source = createControlledSource<Order>({
 
 Controlled 模式不会自行请求；组件只发出查询变化并渲染外部结果。
 `onQueryChange` 表示 Grid 提出的查询变更；父组件接受并通过 `state.query` 回传时不会再次回调，因此一次用户操作只应启动一次业务请求。外部路由或 Store 主动替换 query 同样不会被回声式发回。
+
+外部请求库可能在 query key 变化时继续暴露上一份 data。为避免旧 rows 同时携带旧 total、cursor、summary、facets 或 snapshot 冒充新查询结果，应把“产生这份结果时”的签名放进 `resultRequestSignature`；不要直接用当前 request 的签名标记上一份 data。签名不匹配时 Core 只保留同一数据集的旧 rows 作为 placeholder，清除查询级元数据并等待匹配结果；当前请求失败时仍会进入 error 状态而不会吞错。匹配结果到达后 `data.requestSignature` 更新、`data.placeholder` 变为 false。
+
+动态 Controlled source 在第一次 `onQueryChange` 握手时，可以省略当时已经存在的 bootstrap result 的签名；Core 只会把那一个对象归因到首次请求。握手之后继续保留同一对象是安全的，但任何新的 result 对象——包括旧结果的浅拷贝或深拷贝——都必须显式携带真实的 `resultRequestSignature`，否则会被当作未确认 placeholder，而不会被隐式标记为当前请求。没有 `onQueryChange` 的静态 Controlled source 不受这条动态握手规则约束。
+
+`error` 不是裸异常，而是独立的来源 envelope：`{ value, requestSignature, datasetKey? }`。其中签名和数据集必须来自真正失败的请求，不能直接复制当前 render 的身份。只有两者都与当前请求匹配时，Core 才会对 `value` 做错误归一化并进入 error 状态；旧请求或旧数据集的错误会被完全忽略，也不会污染当前 placeholder。
+
+只要 Controlled source 使用 `datasetKey`，`resultDatasetKey` 就是必填项，并且必须来自结果 envelope，而不是直接复制当前租户 key。两者不匹配时连旧 rows 都不会展示，避免租户 A 的数据在租户 B 界面成为 placeholder。外部缓存 key 同样必须包含 `datasetKey`；请求签名只描述查询，不包含租户身份。
 
 ## 能力声明
 

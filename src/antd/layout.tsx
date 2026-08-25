@@ -15,6 +15,7 @@ import {
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { renderGridValue } from './cells';
+import { getGridFieldValuesText } from './field-value';
 import { resolveGridLocale } from './locale';
 import { gridNodeText, renderGridNode, safeGridText } from './render';
 import { useGridSelectionCount, useResolvedGridSelectionMode } from './selection-mode';
@@ -478,12 +479,6 @@ function flattenConditions(
   );
 }
 
-function activeOptionIdentity(value: unknown): unknown {
-  if (!value || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  return record.value ?? record.id ?? record.key ?? value;
-}
-
 function removeEditableFilterConditions(
   group: GridFilterGroup,
   editableFieldIds: ReadonlySet<string>,
@@ -535,15 +530,9 @@ export function GridActiveFilters<Row extends object>({
             ? field.options
             : facets?.[field.id]
           : undefined;
-        const labelValue = (item: unknown) => {
-          const option = options?.find((candidate) =>
-            Object.is(candidate.value, activeOptionIdentity(item)),
-          );
-          return option ? gridNodeText(option.label) || safeGridText(item) : safeGridText(item);
-        };
-        const value = Array.isArray(condition.value)
-          ? condition.value.map(labelValue).join(', ')
-          : labelValue(condition.value);
+        const value = field
+          ? getGridFieldValuesText(condition.value, options, field)
+          : safeGridText(condition.value);
         const groupLabel = groups
           .map(
             (group) =>

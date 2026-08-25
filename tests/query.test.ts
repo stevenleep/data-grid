@@ -107,6 +107,115 @@ describe('query protocol', () => {
     expect(result.pageInfo?.hasNext).toBe(true);
   });
 
+  it('searches relation labels across one and many values with explicit searchText precedence', () => {
+    interface RelationSearchRow {
+      id: string;
+      owner: { customerCode: string; displayName?: string };
+      reviewers: Array<{
+        customerCode: string;
+        displayName?: string;
+        label?: string;
+        name?: string;
+        title?: string;
+      }>;
+    }
+    const relationSearchDefinition = resolveGridDefinition<RelationSearchRow>({
+      id: 'relation-local-search',
+      rowKey: 'id',
+      fields: [
+        {
+          id: 'owner',
+          title: 'Owner',
+          relation: {
+            target: 'crm.customer',
+            cardinality: 'one',
+            keyField: 'customerCode',
+            labelField: 'displayName',
+          },
+        },
+        {
+          id: 'reviewers',
+          title: 'Reviewers',
+          relation: {
+            target: 'crm.customer',
+            cardinality: 'many',
+            keyField: 'customerCode',
+            labelField: 'displayName',
+          },
+        },
+      ],
+    });
+    const rows: RelationSearchRow[] = [
+      {
+        id: 'matching',
+        owner: { customerCode: 'C1', displayName: 'Ada CRM' },
+        reviewers: [
+          { customerCode: 'C2', displayName: 'Grace Hopper' },
+          { customerCode: 'C3', name: 'Fallback Name' },
+          { customerCode: 'C6', label: 'Label Fallback' },
+          { customerCode: 'C7', title: 'Title Fallback' },
+          { customerCode: 'C9' },
+        ],
+      },
+      {
+        id: 'other',
+        owner: { customerCode: 'C4', displayName: 'Lin CRM' },
+        reviewers: [{ customerCode: 'C5', title: 'Other Reviewer' }],
+      },
+    ];
+    const search = (keyword: string, resolved = relationSearchDefinition) =>
+      applyLocalGridQuery(
+        rows,
+        {
+          pagination: { type: 'offset', page: 1, pageSize: 20 },
+          keyword,
+          filters: createFilterGroup(),
+          sorts: [],
+        },
+        resolved,
+      );
+
+    expect(search('ada crm').rows.map((row) => row.id)).toEqual(['matching']);
+    expect(search('grace hopper').rows.map((row) => row.id)).toEqual(['matching']);
+    expect(search('fallback name').rows.map((row) => row.id)).toEqual(['matching']);
+    expect(search('label fallback').rows.map((row) => row.id)).toEqual(['matching']);
+    expect(search('title fallback').rows.map((row) => row.id)).toEqual(['matching']);
+    expect(search('c9').rows.map((row) => row.id)).toEqual(['matching']);
+
+    const explicitSearchDefinition = resolveGridDefinition<RelationSearchRow>({
+      id: 'relation-explicit-search',
+      rowKey: 'id',
+      fields: [
+        {
+          id: 'owner',
+          title: 'Owner',
+          relation: {
+            target: 'crm.customer',
+            cardinality: 'one',
+            keyField: 'customerCode',
+            labelField: 'displayName',
+          },
+          searchText: (_owner, row) => `account-${row.id}`,
+        },
+      ],
+    });
+    const explicitRows = [rows[0]!];
+    const explicitSearch = (keyword: string) =>
+      applyLocalGridQuery(
+        explicitRows,
+        {
+          pagination: { type: 'offset', page: 1, pageSize: 20 },
+          keyword,
+          filters: createFilterGroup(),
+          sorts: [],
+        },
+        explicitSearchDefinition,
+      );
+
+    expect(explicitSearch('account-matching').total).toEqual({ value: 1, accuracy: 'exact' });
+    expect(explicitSearch('ada crm').total).toEqual({ value: 0, accuracy: 'exact' });
+  });
+
   it('validates the backend capability contract before reading', () => {
     const source = createRemoteSource<Row>(async () => ({ rows: [] }), {
       capabilities: {
@@ -442,6 +551,68 @@ describe('query protocol', () => {
         createFilterCondition('owner', 'equals', { id: 9, label: 'Old label' }),
       ),
     ).toBe(false);
+
+    const customIdentityDefinition = resolveGridDefinition<{
+      id: string;
+      owner: { customerCode: string; label: string };
+    }>({
+      id: 'custom-entity-identity',
+      rowKey: 'id',
+      fields: [
+        {
+          id: 'owner',
+          title: 'Owner',
+          valueType: 'relation',
+          filter: true,
+          getIdentity: (entity) => entity.customerCode,
+        },
+      ],
+    });
+    expect(
+      matchesGridCondition(
+        { id: 'one', owner: { customerCode: 'customer-7', label: 'Ada' } },
+        customIdentityDefinition.fieldMap.get('owner')!,
+        createFilterCondition('owner', 'equals', {
+          customerCode: 'customer-7',
+          label: 'Renamed',
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      matchesGridCondition(
+        { id: 'one', owner: { customerCode: 'customer-7', label: 'Ada' } },
+        customIdentityDefinition.fieldMap.get('owner')!,
+        createFilterCondition('owner', 'equals', 'customer-7'),
+      ),
+    ).toBe(true);
+
+    const relationMetadataDefinition = resolveGridDefinition<{
+      id: string;
+      owner: { customerCode: string; displayName: string };
+    }>({
+      id: 'relation-metadata-identity',
+      rowKey: 'id',
+      fields: [
+        {
+          id: 'owner',
+          title: 'Owner',
+          relation: {
+            target: 'crm.customer',
+            cardinality: 'one',
+            keyField: 'customerCode',
+            labelField: 'displayName',
+          },
+          filter: true,
+        },
+      ],
+    });
+    expect(
+      matchesGridCondition(
+        { id: 'one', owner: { customerCode: 'customer-8', displayName: 'Grace' } },
+        relationMetadataDefinition.fieldMap.get('owner')!,
+        createFilterCondition('owner', 'equals', 'customer-8'),
+      ),
+    ).toBe(true);
   });
 
   it('evaluates relative dates with an explicit timezone, week start and clock', () => {

@@ -17,11 +17,17 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { GridOption, GridResolvedField, GridRowKey } from '../core';
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import type { GridResolvedField, GridRowKey } from '../core';
 import { useGridInstance, useGridSelector } from '../react';
 import { useGridUi } from './context';
 import { useGridOptions } from './hooks';
+import {
+  findGridFieldOption,
+  getGridFieldValueIdentity,
+  getGridFieldValueText,
+  resolveGridFieldValueLabel,
+} from './field-value';
 import {
   getDateTimeFormatter,
   getNumberFormatter,
@@ -35,6 +41,54 @@ import { gridNodeText, renderGridNode, safeGridText } from './render';
 import type { GridLocale } from './types';
 
 const emptyCell = <span className="hui-grid__empty-value">—</span>;
+
+export type GridDefaultEditorType =
+  | 'text'
+  | 'longText'
+  | 'number'
+  | 'decimal'
+  | 'money'
+  | 'percent'
+  | 'boolean'
+  | 'select'
+  | 'multiSelect'
+  | 'status'
+  | 'date'
+  | 'dateTime'
+  | 'duration'
+  | 'link'
+  | 'email'
+  | 'phone'
+  | 'user'
+  | 'relation'
+  | 'json';
+
+const defaultEditorTypes = new Set<string>([
+  'text',
+  'longText',
+  'number',
+  'decimal',
+  'money',
+  'percent',
+  'boolean',
+  'select',
+  'multiSelect',
+  'status',
+  'date',
+  'dateTime',
+  'duration',
+  'link',
+  'email',
+  'phone',
+  'user',
+  'relation',
+  'json',
+]);
+
+/** Whether the AntD adapter can edit this value without a custom editor. */
+export function supportsGridDefaultEditor(editor: string): editor is GridDefaultEditorType {
+  return defaultEditorTypes.has(editor);
+}
 
 function safeUrl(value: unknown, image = false): string | undefined {
   const url = safeGridText(value).trim();
@@ -76,33 +130,6 @@ function focusEditableRowSibling(element: HTMLElement, direction: -1 | 1): void 
       return;
     }
     sibling = direction < 0 ? sibling.previousElementSibling : sibling.nextElementSibling;
-  }
-}
-
-function optionLabel(value: unknown, options: GridOption[] | undefined): ReactNode | undefined {
-  const key = entityOptionValue(value);
-  const label = options?.find((option) => Object.is(option.value, key))?.label;
-  return label === undefined ? undefined : renderGridNode(label);
-}
-
-function entityOptionValue(value: unknown): unknown {
-  if (!value || typeof value !== 'object') return value;
-  try {
-    const record = value as Record<string, unknown>;
-    return record.value ?? record.id ?? record.key ?? value;
-  } catch {
-    return value;
-  }
-}
-
-function objectLabel(value: unknown): string {
-  try {
-    if (value == null) return '';
-    if (typeof value !== 'object') return safeGridText(value);
-    const record = value as Record<string, unknown>;
-    return safeGridText(record.label ?? record.name ?? record.title ?? record.id ?? value);
-  } catch {
-    return safeGridText(value);
   }
 }
 
@@ -268,20 +295,23 @@ export function renderGridValue<Row extends object>(
         );
       case 'select':
       case 'status': {
-        const optionValue = entityOptionValue(value);
-        const option = options?.find((item) => Object.is(item.value, optionValue));
-        return <Tag color={option?.color}>{optionLabel(value, options) ?? objectLabel(value)}</Tag>;
+        const option = findGridFieldOption(value, options, field);
+        return (
+          <Tag color={option?.color}>
+            {renderGridNode(resolveGridFieldValueLabel(value, options, field))}
+          </Tag>
+        );
       }
       case 'multiSelect': {
         const values = Array.isArray(value) ? value : [value];
         return (
           <Space size={[4, 2]} wrap>
             {values.map((item, index) => {
-              const optionValue = entityOptionValue(item);
-              const option = options?.find((candidate) => Object.is(candidate.value, optionValue));
+              const optionValue = getGridFieldValueIdentity(item, field);
+              const option = findGridFieldOption(item, options, field);
               return (
-                <Tag color={option?.color} key={`${safeGridText(item)}-${index}`}>
-                  {optionLabel(item, options) ?? objectLabel(item)}
+                <Tag color={option?.color} key={`${safeGridText(optionValue)}-${index}`}>
+                  {renderGridNode(resolveGridFieldValueLabel(item, options, field))}
                 </Tag>
               );
             })}
@@ -296,19 +326,22 @@ export function renderGridValue<Row extends object>(
             {values.map((item, index) => {
               const record =
                 item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-              const label = optionLabel(item, options) ?? objectLabel(item);
+              const label = resolveGridFieldValueLabel(item, options, field);
               const avatar =
                 typeof record.avatar === 'string' ? safeUrl(record.avatar, true) : undefined;
               const labelText =
-                gridNodeText(label) || objectLabel(item) || gridNodeText(field.title);
+                getGridFieldValueText(item, options, field) || gridNodeText(field.title);
               return (
-                <span className="hui-grid__entity" key={`${gridNodeText(label)}-${index}`}>
+                <span
+                  className="hui-grid__entity"
+                  key={`${safeGridText(getGridFieldValueIdentity(item, field))}-${index}`}
+                >
                   {field.valueType === 'user' && (
                     <Avatar size={18} src={avatar} alt={labelText}>
-                      {objectLabel(item).slice(0, 1)}
+                      {labelText.slice(0, 1)}
                     </Avatar>
                   )}
-                  <span>{label}</span>
+                  <span>{renderGridNode(label)}</span>
                 </span>
               );
             })}
@@ -391,13 +424,31 @@ export interface GridCellProps<Row extends object> {
   field: GridResolvedField<Row>;
 }
 
-export function GridCell<Row extends object>({ row, rowIndex, field }: GridCellProps<Row>) {
+export function GridCell<Row extends object>({
+  row,
+  rowIndex,
+  field,
+}: GridCellProps<Row>): ReactElement {
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const value = field.getValue(row);
-  if (field.render) return renderGridNode(field.render({ value, row, rowIndex, field, instance }));
+  if (field.render) {
+    return <>{renderGridNode(field.render({ value, row, rowIndex, field, instance }))}</>;
+  }
+  const RegisteredRenderer = ui.cellRenderers?.[field.valueType];
+  if (RegisteredRenderer) {
+    return (
+      <RegisteredRenderer
+        value={value}
+        row={row}
+        rowIndex={rowIndex}
+        field={field}
+        instance={instance}
+      />
+    );
+  }
   const locale = resolveGridLocale(ui.locale, ui.language);
-  return renderGridValue(value, field, ui.language || 'zh-CN', ui.timeZone, locale);
+  return <>{renderGridValue(value, field, ui.language || 'zh-CN', ui.timeZone, locale)}</>;
 }
 
 interface EditingCellSnapshot {
@@ -445,7 +496,7 @@ export function GridEditableCell<Row extends object>({
   rowIndex,
   field,
   children,
-}: GridEditableCellProps<Row>) {
+}: GridEditableCellProps<Row>): ReactElement {
   const instance = useGridInstance<Row>();
   const ui = useGridUi<Row>();
   const locale = resolveGridLocale(ui.locale, ui.language);
@@ -468,6 +519,10 @@ export function GridEditableCell<Row extends object>({
   const active = editing.active;
   const draft = active ? editing.draft : field.getValue(row);
   const editorType = field.edit && field.edit.editor ? field.edit.editor : field.valueType;
+  const RegisteredEditor = ui.cellEditors?.[editorType];
+  const hasEditor = Boolean(
+    field.editor || RegisteredEditor || supportsGridDefaultEditor(editorType),
+  );
   const usesOptions = ['select', 'multiSelect', 'status', 'user', 'relation'].includes(editorType);
   const [optionSearch, setOptionSearch] = useState('');
   const [jsonText, setJsonText] = useState('');
@@ -480,10 +535,14 @@ export function GridEditableCell<Row extends object>({
     // Draft is intentionally captured only when a new cell editor opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEditorKey, editorType]);
-  const options = useGridOptions(field, optionSearch, active && usesOptions && !field.editor);
+  const options = useGridOptions(
+    field,
+    optionSearch,
+    active && usesOptions && !field.editor && !RegisteredEditor,
+  );
   const committingRef = useRef(false);
   const numericModeRef = useRef<{ key: string; stringMode: boolean } | undefined>(undefined);
-  const canEdit = instance.editing.canEdit(row, field.id);
+  const canEdit = hasEditor && instance.editing.canEdit(row, field.id);
   useEffect(() => {
     if (active && !canEdit) instance.editing.cancel();
   }, [active, canEdit, instance]);
@@ -503,10 +562,55 @@ export function GridEditableCell<Row extends object>({
       committingRef.current = false;
     }
   };
-  if (!canEdit) return children;
+  if (!canEdit) return <>{children}</>;
+  if (!active) {
+    return (
+      <div
+        className="hui-grid__editable-cell"
+        data-grid-editable="true"
+        tabIndex={rowIndex === 0 ? 0 : -1}
+        role="button"
+        aria-label={locale.editCell(gridNodeText(field.title) || field.id)}
+        aria-keyshortcuts="Enter Space"
+        onClick={(event) => {
+          if (
+            event.detail === 0 &&
+            event.target === event.currentTarget &&
+            !isInteractiveDescendant(event.target, event.currentTarget)
+          ) {
+            instance.editing.begin(row, field.id);
+          }
+        }}
+        onDoubleClick={(event) => {
+          if (!isInteractiveDescendant(event.target, event.currentTarget)) {
+            instance.editing.begin(row, field.id);
+          }
+        }}
+        onKeyDown={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            (event.key === 'Enter' || event.key === ' ')
+          ) {
+            event.preventDefault();
+            event.currentTarget.click();
+          }
+          if (event.target === event.currentTarget && event.key === 'ArrowUp') {
+            event.preventDefault();
+            focusEditableRowSibling(event.currentTarget, -1);
+          }
+          if (event.target === event.currentTarget && event.key === 'ArrowDown') {
+            event.preventDefault();
+            focusEditableRowSibling(event.currentTarget, 1);
+          }
+        }}
+      >
+        {children}
+      </div>
+    );
+  }
 
   let input: ReactNode;
-  if (field.editor && active) {
+  if (field.editor) {
     input = renderGridNode(
       field.editor({
         value: field.getValue(row),
@@ -521,6 +625,22 @@ export function GridEditableCell<Row extends object>({
         commit,
         cancel: instance.editing.cancel,
       }),
+    );
+  } else if (RegisteredEditor) {
+    input = (
+      <RegisteredEditor
+        value={field.getValue(row)}
+        row={row}
+        rowIndex={rowIndex}
+        field={field}
+        instance={instance}
+        draft={draft}
+        saving={editing.saving}
+        error={editingError}
+        setDraft={instance.editing.setDraft}
+        commit={commit}
+        cancel={instance.editing.cancel}
+      />
     );
   } else if (['number', 'decimal', 'money', 'percent', 'duration'].includes(editorType)) {
     const moneyRecord =
@@ -588,12 +708,14 @@ export function GridEditableCell<Row extends object>({
           : [draft]
       : [];
     const selectedValue = multiple
-      ? draftItems.map(entityOptionValue).filter(isOptionPrimitive)
-      : entityOptionValue(draft);
+      ? draftItems.map((item) => getGridFieldValueIdentity(item, field)).filter(isOptionPrimitive)
+      : getGridFieldValueIdentity(draft, field);
     const preserveDomainValue = (value: unknown) => {
       const candidates = multiple ? draftItems : draft == null ? [] : [draft];
       return (
-        candidates.find((candidate) => Object.is(entityOptionValue(candidate), value)) ?? value
+        candidates.find((candidate) =>
+          Object.is(getGridFieldValueIdentity(candidate, field), value),
+        ) ?? value
       );
     };
     const setSelectedDraft = (value: unknown) => {
@@ -717,7 +839,7 @@ export function GridEditableCell<Row extends object>({
         }}
       />
     );
-  } else {
+  } else if (supportsGridDefaultEditor(editorType)) {
     input = (
       <Input
         size="small"
@@ -732,58 +854,17 @@ export function GridEditableCell<Row extends object>({
         }}
       />
     );
-  }
-
-  if (active) {
-    return (
-      <Tooltip open={Boolean(editingError)} title={editingError} color="red">
-        <Spin spinning={editing.saving} size="small">
-          <div className="hui-grid__cell-editor" aria-busy={editing.saving}>
-            {input}
-          </div>
-        </Spin>
-      </Tooltip>
-    );
+  } else {
+    return <>{children}</>;
   }
 
   return (
-    <div
-      className="hui-grid__editable-cell"
-      data-grid-editable="true"
-      tabIndex={rowIndex === 0 ? 0 : -1}
-      role="button"
-      aria-label={locale.editCell(gridNodeText(field.title) || field.id)}
-      aria-keyshortcuts="Enter Space"
-      onClick={(event) => {
-        if (
-          event.detail === 0 &&
-          event.target === event.currentTarget &&
-          !isInteractiveDescendant(event.target, event.currentTarget)
-        ) {
-          instance.editing.begin(row, field.id);
-        }
-      }}
-      onDoubleClick={(event) => {
-        if (!isInteractiveDescendant(event.target, event.currentTarget)) {
-          instance.editing.begin(row, field.id);
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
-          event.preventDefault();
-          event.currentTarget.click();
-        }
-        if (event.target === event.currentTarget && event.key === 'ArrowUp') {
-          event.preventDefault();
-          focusEditableRowSibling(event.currentTarget, -1);
-        }
-        if (event.target === event.currentTarget && event.key === 'ArrowDown') {
-          event.preventDefault();
-          focusEditableRowSibling(event.currentTarget, 1);
-        }
-      }}
-    >
-      {children}
-    </div>
+    <Tooltip open={Boolean(editingError)} title={editingError} color="red">
+      <Spin spinning={editing.saving} size="small">
+        <div className="hui-grid__cell-editor" aria-busy={editing.saving}>
+          {input}
+        </div>
+      </Spin>
+    </Tooltip>
   );
 }

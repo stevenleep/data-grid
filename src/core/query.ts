@@ -21,6 +21,17 @@ import {
   pruneEmptyFilterGroups,
 } from './model';
 import { compareExactNumeric } from './numeric';
+import {
+  assertGridCalendarTimeZone,
+  compareGridCalendarValues,
+  compareGridDateTimeInstants,
+  compareGridDateTimeValues,
+  compareGridDateValues,
+  gridCalendarDate,
+  gridDateTimeValueEquals,
+  gridDateValueEquals,
+  type GridCalendarDateValue,
+} from './temporal';
 
 function text(value: unknown): string {
   if (value == null) return '';
@@ -42,13 +53,6 @@ function list(value: unknown): unknown[] {
 }
 
 function comparable(value: unknown): string | number {
-  if (value instanceof Date) return Number.isFinite(value.valueOf()) ? value.valueOf() : '';
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T\s]|$)/.test(value)) {
-    const source = value.trim();
-    const offsetlessDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(source);
-    const timestamp = Date.parse(offsetlessDateTime ? `${source}Z` : source);
-    if (Number.isFinite(timestamp)) return timestamp;
-  }
   if (value && typeof value === 'object') {
     try {
       const primitive = (value as { valueOf?: () => unknown }).valueOf?.();
@@ -95,10 +99,19 @@ function fieldValueEquals<Row extends object>(
   field: GridResolvedField<Row>,
   left: unknown,
   right: unknown,
+  temporal?: GridTemporalContext,
 ): boolean {
   if (exactNumericValueTypes.has(field.valueType)) {
     const result = compareExactNumeric(left, right);
     if (result !== undefined) return result === 0;
+  }
+  if (field.valueType === 'date' && field.equals === gridDateValueEquals) {
+    const result = compareGridCalendarValues(left, right, temporal?.timeZone || 'UTC');
+    return result !== undefined && result === 0;
+  }
+  if (field.valueType === 'dateTime' && field.equals === gridDateTimeValueEquals) {
+    const result = compareGridDateTimeInstants(left, right);
+    return result !== undefined && result === 0;
   }
   try {
     return field.equals(left as never, right as never);
@@ -107,28 +120,23 @@ function fieldValueEquals<Row extends object>(
   }
 }
 
-const dayMilliseconds = 86_400_000;
-const calendarFormatters = new Map<string, Intl.DateTimeFormat>();
-
-interface CalendarDate {
-  year: number;
-  month: number;
-  day: number;
-  serial: number;
-  dayOfWeek: number;
-}
-
-function calendarFormatter(timeZone: string): Intl.DateTimeFormat {
-  let formatter = calendarFormatters.get(timeZone);
-  if (formatter) return formatter;
-  formatter = new Intl.DateTimeFormat('en-US-u-ca-iso8601-nu-latn', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  calendarFormatters.set(timeZone, formatter);
-  return formatter;
+function compareFieldValues<Row extends object>(
+  field: GridResolvedField<Row>,
+  left: unknown,
+  right: unknown,
+  leftRow: Row,
+  rightRow: Row,
+  temporal?: GridTemporalContext,
+): number | undefined {
+  if (field.valueType === 'date' && field.compare === compareGridDateValues) {
+    return compareGridCalendarValues(left, right, temporal?.timeZone || 'UTC');
+  }
+  if (field.valueType === 'dateTime' && field.compare === compareGridDateTimeValues) {
+    return compareGridDateTimeInstants(left, right);
+  }
+  return field.compare
+    ? field.compare(left as never, right as never, leftRow, rightRow)
+    : compareValues(left, right);
 }
 
 export function validateGridTemporalContext(temporal: GridTemporalContext | undefined): void {
@@ -147,7 +155,7 @@ export function validateGridTemporalContext(temporal: GridTemporalContext | unde
     throw new Error('Grid temporal timeZone must be a non-empty IANA timezone.');
   }
   try {
-    calendarFormatter(temporal.timeZone || 'UTC');
+    assertGridCalendarTimeZone(temporal.timeZone || 'UTC');
   } catch {
     throw new Error(`Invalid grid temporal timeZone: ${String(temporal.timeZone)}`);
   }
@@ -164,66 +172,7 @@ export function validateGridTemporalContext(temporal: GridTemporalContext | unde
   }
 }
 
-function calendarDate(year: number, month: number, day: number): CalendarDate | undefined {
-  const timestamp = Date.UTC(year, month - 1, day);
-  const date = new Date(timestamp);
-  if (
-    !Number.isFinite(timestamp) ||
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() + 1 !== month ||
-    date.getUTCDate() !== day
-  ) {
-    return undefined;
-  }
-  return {
-    year,
-    month,
-    day,
-    serial: Math.floor(timestamp / dayMilliseconds),
-    dayOfWeek: date.getUTCDay(),
-  };
-}
-
-function temporalDate(value: unknown, timeZone: string): CalendarDate | undefined {
-  if (typeof value === 'string') {
-    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-    if (dateOnly)
-      return calendarDate(Number(dateOnly[1]), Number(dateOnly[2]), Number(dateOnly[3]));
-  }
-
-  let date: Date;
-  try {
-    if (value instanceof Date) {
-      date = value;
-    } else if (
-      value &&
-      typeof value === 'object' &&
-      typeof (value as { toDate?: unknown }).toDate === 'function'
-    ) {
-      date = (value as { toDate: () => Date }).toDate();
-    } else {
-      const source = typeof value === 'string' ? value.trim() : value;
-      const offsetlessDateTime =
-        typeof source === 'string' &&
-        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(source);
-      date = new Date(offsetlessDateTime ? `${source}Z` : (source as string | number));
-    }
-  } catch {
-    return undefined;
-  }
-  if (!(date instanceof Date) || !Number.isFinite(date.valueOf())) return undefined;
-
-  try {
-    const parts = calendarFormatter(timeZone).formatToParts(date);
-    const part = (type: Intl.DateTimeFormatPartTypes) =>
-      Number(parts.find((candidate) => candidate.type === type)?.value);
-    return calendarDate(part('year'), part('month'), part('day'));
-  } catch {
-    return undefined;
-  }
-}
-
-function weekStart(date: CalendarDate, startsOn: number): number {
+function weekStart(date: GridCalendarDateValue, startsOn: number): number {
   return date.serial - ((date.dayOfWeek - startsOn + 7) % 7);
 }
 
@@ -243,8 +192,8 @@ function relativeDateMatches(
   if (!(now instanceof Date) || !Number.isFinite(now.valueOf())) {
     throw new Error('Grid temporal now must return a valid Date.');
   }
-  const source = temporalDate(value, timeZone);
-  const today = temporalDate(now, timeZone);
+  const source = gridCalendarDate(value, timeZone);
+  const today = gridCalendarDate(now, timeZone);
   if (!source || !today) return false;
   if (operator === 'today') return source.serial === today.serial;
   if (operator === 'yesterday') return source.serial === today.serial - 1;
@@ -297,6 +246,7 @@ export function matchesGridCondition<Row extends object>(
       'last30Days',
     ].includes(operator)
   ) {
+    if (field.valueType !== 'date' && field.valueType !== 'dateTime') return false;
     return relativeDateMatches(value, operator, temporal);
   }
 
@@ -308,9 +258,11 @@ export function matchesGridCondition<Row extends object>(
   if (operator === 'equals' || operator === 'notEquals') {
     const matches = Array.isArray(value)
       ? Array.isArray(target)
-        ? arrayMultisetEquals(value, target, (left, right) => fieldValueEquals(field, left, right))
-        : value.some((item) => fieldValueEquals(field, item, target))
-      : fieldValueEquals(field, value, target);
+        ? arrayMultisetEquals(value, target, (left, right) =>
+            fieldValueEquals(field, left, right, temporal),
+          )
+        : value.some((item) => fieldValueEquals(field, item, target, temporal))
+      : fieldValueEquals(field, value, target, temporal);
     return operator === 'equals' ? matches : !matches;
   }
 
@@ -318,7 +270,7 @@ export function matchesGridCondition<Row extends object>(
     const targets = list(target);
     const values = list(value);
     const matches = values.some((item) =>
-      targets.some((candidate) => fieldValueEquals(field, item, candidate)),
+      targets.some((candidate) => fieldValueEquals(field, item, candidate, temporal)),
     );
     return operator === 'in' ? matches : !matches;
   }
@@ -327,7 +279,7 @@ export function matchesGridCondition<Row extends object>(
     const targets = list(target);
     const values = list(value);
     const contains = (candidate: unknown) =>
-      values.some((item) => fieldValueEquals(field, item, candidate));
+      values.some((item) => fieldValueEquals(field, item, candidate, temporal));
     if (operator === 'containsAll') return targets.every(contains);
     if (operator === 'containsNone') return targets.every((candidate) => !contains(candidate));
     return targets.some(contains);
@@ -336,17 +288,15 @@ export function matchesGridCondition<Row extends object>(
   if (operator === 'between' || operator === 'notBetween') {
     if (!Array.isArray(target) || target.length !== 2) return false;
     const [start, end] = target;
-    const compare = (candidate: unknown) =>
-      field.compare
-        ? field.compare(value, candidate as never, row, row)
-        : compareValues(value, candidate);
-    const matches = compare(start) >= 0 && compare(end) <= 0;
+    const startComparison = compareFieldValues(field, value, start, row, row, temporal);
+    const endComparison = compareFieldValues(field, value, end, row, row, temporal);
+    if (startComparison === undefined || endComparison === undefined) return false;
+    const matches = startComparison >= 0 && endComparison <= 0;
     return operator === 'between' ? matches : !matches;
   }
 
-  const compared = field.compare
-    ? field.compare(value, target as never, row, row)
-    : compareValues(value, target);
+  const compared = compareFieldValues(field, value, target, row, row, temporal);
+  if (compared === undefined) return false;
   if (operator === 'greaterThan' || operator === 'after') return compared > 0;
   if (operator === 'greaterThanOrEqual' || operator === 'onOrAfter') return compared >= 0;
   if (operator === 'lessThan' || operator === 'before') return compared < 0;
@@ -378,6 +328,7 @@ function compareRows<Row extends object>(
   right: Row,
   sorts: GridSort[],
   fieldMap: ReadonlyMap<string, GridResolvedField<Row>>,
+  temporal?: GridTemporalContext,
 ): number {
   for (const sort of sorts) {
     const field = fieldMap.get(sort.fieldId);
@@ -391,9 +342,9 @@ function compareRows<Row extends object>(
       const emptyResult = leftEmpty ? -1 : 1;
       return sort.nulls === 'first' ? emptyResult : -emptyResult;
     }
-    const compared = field.compare
-      ? field.compare(leftValue, rightValue, left, right)
-      : compareValues(leftValue, rightValue);
+    const compared =
+      compareFieldValues(field, leftValue, rightValue, left, right, temporal) ??
+      compareValues(leftValue, rightValue);
     if (compared !== 0) return sort.direction === 'asc' ? compared : -compared;
   }
   return 0;
@@ -426,6 +377,7 @@ export function applyLocalGridQuery<Row extends object>(
   if (keyword) {
     result = result.filter((row) =>
       definition.fields.some((field) => {
+        if (!field.capabilities.search) return false;
         const value = field.getValue(row);
         return text(field.searchText?.(value, row) ?? value).includes(keyword);
       }),
@@ -434,7 +386,7 @@ export function applyLocalGridQuery<Row extends object>(
 
   if (query.sorts.length) {
     result = [...result].sort((left, right) =>
-      compareRows(left, right, query.sorts, definition.fieldMap),
+      compareRows(left, right, query.sorts, definition.fieldMap, temporal),
     );
   }
   const total = result.length;
@@ -528,11 +480,23 @@ function compileProjection<Row extends object>(
   if (fieldIds === undefined) return undefined;
   const selected = [...fieldIds, ...(definition.projection?.requiredFields || [])];
   const keys = [...rowKeySelectKeys(definition), ...(definition.projection?.requiredKeys || [])];
-  selected.forEach((fieldId) => {
+  const included = new Set<string>();
+  const includeField = (fieldId: string): void => {
+    if (included.has(fieldId)) return;
+    included.add(fieldId);
     const field = definition.fieldMap.get(fieldId);
     if (!field) throw new Error(`Unknown projected field: ${fieldId}`);
-    keys.push(field.transport.selectKey, ...(field.transport.selectDependencies || []));
-  });
+    if (field.derivation?.binding === 'runtime') {
+      // Runtime-derived values are materialized by the trusted accessor. Their
+      // semantic output key may not exist on the server at all, so request only
+      // explicit raw requirements and the fields consumed by that accessor.
+      keys.push(...(field.transport.selectDependencies || []));
+      field.derivation.dependencies.forEach(includeField);
+    } else {
+      keys.push(field.transport.selectKey, ...(field.transport.selectDependencies || []));
+    }
+  };
+  selected.forEach(includeField);
   return [...new Set(keys)];
 }
 

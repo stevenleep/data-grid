@@ -58,9 +58,14 @@ export function createDemoOrders(count = 137): DemoOrder[] {
 
 export function waitForServer(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, milliseconds);
+    const cleanup = () => signal.removeEventListener('abort', abort);
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, milliseconds);
     const abort = () => {
       window.clearTimeout(timer);
+      cleanup();
       reject(new DOMException('The request was aborted.', 'AbortError'));
     };
     if (signal.aborted) abort();

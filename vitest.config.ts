@@ -23,6 +23,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
+    // Ant Design integration tests remain deterministic under V8 coverage on
+    // slower CI runners while still failing promptly on a genuine hang.
+    testTimeout: 10_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],

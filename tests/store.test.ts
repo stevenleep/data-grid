@@ -45,6 +45,34 @@ function deferred<Value>() {
   return { promise, resolve, reject };
 }
 
+function offsetQuery(page: number): GridQuery {
+  return {
+    pagination: { type: 'offset', page, pageSize: 1 },
+    keyword: '',
+    filters: { id: 'root', type: 'group', logic: 'and', children: [] },
+    sorts: [],
+  };
+}
+
+function offsetPageData(page: number) {
+  return {
+    rows: [rows[page - 1]!],
+    total: { value: rows.length, accuracy: 'exact' as const },
+    pageInfo: { hasPrevious: page > 1, hasNext: page < rows.length },
+  };
+}
+
+function controlledOffsetPageData(page: number): GridState<Row>['data'] {
+  return {
+    ...offsetPageData(page),
+    status: 'success',
+    fetching: false,
+    summary: [],
+    facets: {},
+    warnings: [],
+  };
+}
+
 describe('grid store', () => {
   it('supports pagination-first local data and cross-page selection', async () => {
     const grid = createGrid<Row>({
@@ -96,6 +124,259 @@ describe('grid store', () => {
     });
     await initial;
     await vi.waitFor(() => expect(grid.getState().data.rows[0]?.name).toBe('Latest'));
+    grid.destroy();
+  });
+
+  it('drops stale pageInfo before a kept-data pagination request can trigger a rerender', async () => {
+    const pending: Array<ReturnType<typeof deferred<GridReadResult<Row>>>> = [];
+    const read = vi.fn(() => {
+      const request = deferred<GridReadResult<Row>>();
+      pending.push(request);
+      return request.promise;
+    });
+    const gridDefinition = definition();
+    const source = createRemoteSource(read, {
+      datasetKey: 'stable-pagination',
+      policy: { keepPreviousData: true },
+    });
+    const options = { definition: gridDefinition, source };
+    const grid = createGrid<Row>(options);
+
+    const initial = grid.start();
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    pending[0]!.resolve({
+      rows: [rows[0]!],
+      total: { value: 3, accuracy: 'exact' },
+      pageInfo: { hasPrevious: false, hasNext: true },
+    });
+    await initial;
+
+    grid.query.setPage(2, 'user');
+    expect(grid.getState().data.rows).toEqual([rows[0]]);
+    expect(grid.getState().data.pageInfo).toBeUndefined();
+    expect(() => grid.updateOptions(options)).not.toThrow();
+
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.resolve({
+      rows: [rows[1]!],
+      total: { value: 3, accuracy: 'exact' },
+      pageInfo: { hasPrevious: true, hasNext: true },
+    });
+    await vi.waitFor(() => expect(grid.getState().data.rows).toEqual([rows[1]]));
+    grid.destroy();
+  });
+
+  it('drops stale pageInfo when a parent accepts a controlled pagination request', () => {
+    const gridDefinition = definition();
+    const source = createRemoteSource<Row>(async () => ({ rows: [] }), {
+      datasetKey: 'controlled-query-pagination',
+    });
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source,
+      state: { query: offsetQuery(1) },
+      stateDatasetKey: 'controlled-query-pagination',
+      defaultState: { data: offsetPageData(1) },
+    });
+
+    expect(() =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source,
+        state: { query: offsetQuery(2) },
+        stateDatasetKey: 'controlled-query-pagination',
+      }),
+    ).not.toThrow();
+    expect(grid.getState().query.pagination).toEqual({ type: 'offset', page: 2, pageSize: 1 });
+    expect(grid.getState().data.pageInfo).toBeUndefined();
+    grid.destroy();
+  });
+
+  it('drops stale pageInfo when applying a view resets pagination', () => {
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource<Row>(async () => ({ rows: [] })),
+      defaultState: { query: { pagination: offsetQuery(2).pagination }, data: offsetPageData(2) },
+    });
+    const view = grid.views.create('Reset pagination')!;
+
+    grid.views.apply(view.id);
+
+    expect(grid.getState().query.pagination).toEqual({ type: 'offset', page: 1, pageSize: 1 });
+    expect(grid.getState().data.pageInfo).toBeUndefined();
+    grid.destroy();
+  });
+
+  it('drops stale pageInfo when a persistence identity restores the preference baseline', () => {
+    const gridDefinition = definition();
+    const source = createRemoteSource<Row>(async () => ({ rows: [] }));
+    const persistence = (identity: string): GridPersistence<Row> => ({
+      identity,
+      load: async () => null,
+      save: async () => undefined,
+    });
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source,
+      defaultState: { query: { pagination: offsetQuery(2).pagination }, data: offsetPageData(2) },
+      persistence: persistence('tenant-a'),
+    });
+
+    expect(() =>
+      grid.updateOptions({
+        definition: gridDefinition,
+        source,
+        persistence: persistence('tenant-b'),
+      }),
+    ).not.toThrow();
+    expect(grid.getState().query.pagination).toEqual({ type: 'offset', page: 1, pageSize: 1 });
+    expect(grid.getState().data.pageInfo).toBeUndefined();
+    grid.destroy();
+  });
+
+  it('drops cursor pageInfo while keeping rows until the next cursor result arrives', async () => {
+    const pending: Array<ReturnType<typeof deferred<GridReadResult<Row>>>> = [];
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createRemoteSource(
+        () => {
+          const request = deferred<GridReadResult<Row>>();
+          pending.push(request);
+          return request.promise;
+        },
+        {
+          datasetKey: 'cursor-page-info',
+          capabilities: { pagination: 'cursor' },
+          policy: { keepPreviousData: true },
+        },
+      ),
+    });
+
+    const initial = grid.start();
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    pending[0]!.resolve({
+      rows: [rows[0]!],
+      pageInfo: { hasPrevious: false, hasNext: true, nextCursor: 'cursor-2' },
+    });
+    await initial;
+
+    grid.query.goToCursor('cursor-2', 'forward', 'user');
+    expect(grid.getState().data.rows).toEqual([rows[0]]);
+    expect(grid.getState().data.pageInfo).toBeUndefined();
+
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.resolve({
+      rows: [rows[1]!],
+      pageInfo: { hasPrevious: true, previousCursor: 'cursor-1', hasNext: false },
+    });
+    await vi.waitFor(() => expect(grid.getState().data.rows).toEqual([rows[1]]));
+    expect(grid.getState().data.pageInfo).toEqual({
+      hasPrevious: true,
+      previousCursor: 'cursor-1',
+      hasNext: false,
+    });
+    grid.destroy();
+  });
+
+  it('keeps pageInfo when a stable dataset replaces its reader without changing the request', () => {
+    const gridDefinition = definition();
+    const source = (read: () => Promise<GridReadResult<Row>>) =>
+      createRemoteSource(read, { datasetKey: 'stable-reader' });
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source: source(async () => ({ rows: [] })),
+      defaultState: { data: offsetPageData(1) },
+    });
+    const pageInfo = grid.getState().data.pageInfo;
+
+    grid.updateOptions({
+      definition: gridDefinition,
+      source: source(async () => ({ rows: rows.slice(0, 1) })),
+    });
+
+    expect(grid.getState().data.pageInfo).toBe(pageInfo);
+    grid.destroy();
+  });
+
+  it('preserves caller-owned data when controlled query and data advance atomically', () => {
+    const gridDefinition = definition();
+    const source = createRemoteSource<Row>(async () => ({ rows: [] }), {
+      datasetKey: 'atomic-controlled-state',
+    });
+    const firstData = controlledOffsetPageData(1);
+    const grid = createGrid<Row>({
+      definition: gridDefinition,
+      source,
+      state: { query: offsetQuery(1), data: firstData },
+      stateDatasetKey: 'atomic-controlled-state',
+    });
+    const secondData = controlledOffsetPageData(2);
+
+    grid.updateOptions({
+      definition: gridDefinition,
+      source,
+      state: { query: offsetQuery(2), data: secondData },
+      stateDatasetKey: 'atomic-controlled-state',
+    });
+
+    expect(grid.getState().data).toBe(secondData);
+    expect(grid.getState().data.pageInfo).toEqual({ hasPrevious: true, hasNext: true });
+    grid.destroy();
+  });
+
+  it('keeps effective pageInfo valid when persistence restores behind a controlled query', async () => {
+    const columns: GridColumnState = {
+      order: ['name'],
+      hidden: [],
+      widths: { name: 160 },
+      pinned: { name: null },
+      density: 'compact',
+    };
+    const timestamp = '2026-01-01T00:00:00.000Z';
+    const persisted: GridPersistedState = {
+      protocol: 'huiyun.data-grid/preferences/v1',
+      gridId: 'store-test',
+      revision: 1,
+      columns,
+      views: [
+        {
+          id: 'persisted-view',
+          name: 'Persisted view',
+          query: {
+            keyword: 'persisted',
+            filters: { id: 'root', type: 'group', logic: 'and', children: [] },
+            sorts: [],
+          },
+          columns,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ],
+      activeViewId: 'persisted-view',
+      updatedAt: timestamp,
+    };
+    const controlledQuery = offsetQuery(2);
+    const grid = createGrid<Row>({
+      definition: definition(),
+      source: createControlledSource({
+        datasetKey: 'controlled-persistence',
+        resultDatasetKey: 'controlled-persistence',
+        result: offsetPageData(2),
+      }),
+      state: { query: controlledQuery },
+      stateDatasetKey: 'controlled-persistence',
+      defaultState: { data: offsetPageData(2) },
+      persistence: {
+        identity: 'controlled-persistence',
+        load: async () => persisted,
+        save: async () => undefined,
+      },
+    });
+
+    await expect(grid.start()).resolves.toBeUndefined();
+    expect(grid.getState().query).toBe(controlledQuery);
+    expect(grid.getState().query.pagination).toEqual({ type: 'offset', page: 2, pageSize: 1 });
+    expect(grid.getState().data.pageInfo).toEqual({ hasPrevious: true, hasNext: true });
     grid.destroy();
   });
 
@@ -414,6 +695,7 @@ describe('grid store', () => {
       definition: definition(),
       source: createControlledSource({
         datasetKey: 'tenant-b',
+        resultDatasetKey: 'tenant-b',
         result: { rows: [{ id: 2, name: 'Tenant B' }], total: { value: 1 } },
       }),
     });
@@ -517,6 +799,7 @@ describe('grid store', () => {
     const onQueryChange = vi.fn();
     const source = createControlledSource({
       datasetKey: 'controlled',
+      resultDatasetKey: 'controlled',
       result,
       capabilities: { projection: true },
       onQueryChange,
@@ -549,40 +832,70 @@ describe('grid store', () => {
     const source = (result: GridReadResult<Row>) =>
       createControlledSource({
         datasetKey: 'selection',
+        resultDatasetKey: 'selection',
         result,
         capabilities: { selectAllMatching: true },
       });
     const grid = createGrid<Row>({
       definition: gridDefinition,
-      source: source({ rows: [rows[0]!], total: { value: 3 } }),
+      source: source({
+        rows: [rows[0]!],
+        total: { value: 3 },
+        snapshotId: 'selection-snapshot',
+      }),
     });
     await grid.start();
     grid.selection.selectPage();
 
     grid.updateOptions({
       definition: gridDefinition,
-      source: source({ rows: [rows[1]!], total: { value: 3 } }),
+      source: source({
+        rows: [rows[1]!],
+        total: { value: 3 },
+        snapshotId: 'selection-snapshot',
+      }),
     });
     expect(grid.selection.getSelectedRows()[0]?.name).toBe('One');
 
     grid.updateOptions({
       definition: gridDefinition,
-      source: source({ rows: [{ id: 1, name: 'One refreshed' }], total: { value: 3 } }),
+      source: source({
+        rows: [{ id: 1, name: 'One refreshed' }],
+        total: { value: 3 },
+        snapshotId: 'selection-snapshot',
+      }),
     });
     expect(grid.selection.getSelectedRows()[0]?.name).toBe('One refreshed');
 
     grid.selection.selectAllMatching();
+    expect(grid.getState().selection).toMatchObject({ snapshotId: 'selection-snapshot' });
     grid.selection.toggle(1, { id: 1, name: 'One refreshed' }, false);
     grid.updateOptions({
       definition: gridDefinition,
-      source: source({ rows: [rows[1]!], total: { value: 5 } }),
+      source: source({
+        rows: [rows[1]!],
+        total: { value: 5 },
+        snapshotId: 'selection-snapshot',
+      }),
     });
     expect(grid.getState().selection).toMatchObject({
       mode: 'allMatching',
+      snapshotId: 'selection-snapshot',
       total: 5,
       excludedKeys: [1],
     });
     expect(grid.selection.getCount()).toBe(4);
+
+    grid.updateOptions({
+      definition: gridDefinition,
+      source: source({
+        rows: [rows[1]!],
+        total: { value: 6 },
+        snapshotId: 'next-snapshot',
+      }),
+    });
+    expect(grid.getState().selection).toEqual({ mode: 'explicit', selectedKeys: [] });
+    expect(grid.selection.getCount()).toBe(0);
     grid.destroy();
   });
 
@@ -1060,6 +1373,7 @@ describe('grid store', () => {
       definition: definition(),
       source: createControlledSource({
         datasetKey: 'controlled-after-cursor',
+        resultDatasetKey: 'controlled-after-cursor',
         result: { rows: [] },
         capabilities: { pagination: 'cursor' },
         onQueryChange,
@@ -1241,18 +1555,29 @@ describe('grid store', () => {
     const staleResult = { rows: [{ id: 1, name: 'Tenant A' }], total: { value: 1 } };
     const controlled = createGrid<Row>({
       definition: definition(),
-      source: createControlledSource({ datasetKey: 'tenant-a', result: staleResult }),
+      source: createControlledSource({
+        datasetKey: 'tenant-a',
+        resultDatasetKey: 'tenant-a',
+        result: staleResult,
+      }),
     });
     await controlled.start();
     controlled.updateOptions({
       definition: definition(),
-      source: createControlledSource({ datasetKey: 'tenant-b', result: staleResult }),
+      source: createControlledSource({
+        datasetKey: 'tenant-b',
+        resultDatasetKey: 'tenant-a',
+        result: staleResult,
+      }),
     });
     expect(controlled.getState().data.rows).toEqual([]);
+    expect(controlled.getState().data.status).toBe('loading');
+    expect(controlled.getState().data.fetching).toBe(true);
     controlled.updateOptions({
       definition: definition(),
       source: createControlledSource({
         datasetKey: 'tenant-b',
+        resultDatasetKey: 'tenant-b',
         result: { rows: [{ id: 2, name: 'Tenant B' }], total: { value: 1 } },
       }),
     });
@@ -1277,19 +1602,22 @@ describe('grid store', () => {
       definition: definition(),
       source: createRemoteSource(firstRead, { datasetKey: 'tenant-a' }),
       state: { data: staleData },
+      stateDatasetKey: 'tenant-a',
     });
     await stateControlled.start();
     stateControlled.updateOptions({
       definition: definition(),
       source: createRemoteSource(secondRead, { datasetKey: 'tenant-b' }),
-      state: { data: staleData },
+      state: { data: { ...staleData, rows: [...staleData.rows] } },
+      stateDatasetKey: 'tenant-a',
     });
     expect(stateControlled.getState().data.rows).toEqual([]);
     expect(stateControlled.getState().data.fetching).toBe(true);
     stateControlled.updateOptions({
       definition: definition(),
       source: createRemoteSource(thirdRead, { datasetKey: 'tenant-c' }),
-      state: { data: staleData },
+      state: { data: { ...staleData, rows: [...staleData.rows] } },
+      stateDatasetKey: 'tenant-a',
     });
     expect(stateControlled.getState().data.rows).toEqual([]);
     tenantBRead.resolve({ rows: [{ id: 2, name: 'Late Tenant B' }], total: { value: 1 } });
@@ -1298,7 +1626,7 @@ describe('grid store', () => {
     stateControlled.destroy();
   });
 
-  it('keeps entity-controlled slices masked across A to B to C until their references change', async () => {
+  it('keeps entity-controlled slices masked until their dataset provenance is acknowledged', async () => {
     const save = vi.fn(async () => undefined);
     const onStateChange = vi.fn();
     const gridDefinition = definition({ editing: { save, reloadOnSave: false } });
@@ -1319,25 +1647,46 @@ describe('grid store', () => {
       definition: gridDefinition,
       source: createControlledSource({
         datasetKey: 'tenant-a',
+        resultDatasetKey: 'tenant-a',
         result: { rows: [{ id: 1, name: 'Tenant A' }] },
       }),
       state: tenantAState,
+      stateDatasetKey: 'tenant-a',
       onStateChange,
     });
     await grid.start();
     onStateChange.mockClear();
 
-    const updateDataset = (datasetKey: string, name: string, state = tenantAState) =>
+    const updateDataset = (
+      datasetKey: string,
+      name: string,
+      state = tenantAState,
+      stateDatasetKey = 'tenant-a',
+    ) =>
       grid.updateOptions({
         definition: gridDefinition,
         source: createControlledSource({
           datasetKey,
+          resultDatasetKey: datasetKey,
           result: { rows: [{ id: 1, name }] },
         }),
         state,
+        stateDatasetKey,
         onStateChange,
       });
-    updateDataset('tenant-b', 'Tenant B');
+    updateDataset('tenant-b', 'Tenant B', {
+      selection: { mode: 'explicit', selectedKeys: [1] },
+      editing: {
+        active: {
+          rowKey: 1,
+          fieldId: 'name',
+          previousValue: 'Tenant A',
+          draft: 'Cloned stale draft',
+        },
+        saving: false,
+      },
+      actions: { pending: { 'tenant-a-action': true }, errors: {} },
+    });
     const resetCalls = onStateChange.mock.calls.filter(
       (call) => call[1]?.type === 'dataset.controlled.reset',
     );
@@ -1362,19 +1711,24 @@ describe('grid store', () => {
       errors: {},
     });
 
-    updateDataset('tenant-c', 'Tenant C', {
-      selection: { mode: 'explicit', selectedKeys: [1] },
-      editing: {
-        active: {
-          rowKey: 1,
-          fieldId: 'name',
-          previousValue: 'Tenant C',
-          draft: 'Tenant C acknowledged',
+    updateDataset(
+      'tenant-c',
+      'Tenant C',
+      {
+        selection: { mode: 'explicit', selectedKeys: [1] },
+        editing: {
+          active: {
+            rowKey: 1,
+            fieldId: 'name',
+            previousValue: 'Tenant C',
+            draft: 'Tenant C acknowledged',
+          },
+          saving: false,
         },
-        saving: false,
+        actions: { pending: {}, errors: {} },
       },
-      actions: { pending: {}, errors: {} },
-    });
+      'tenant-c',
+    );
     expect(grid.getState().selection).toEqual({ mode: 'explicit', selectedKeys: [1] });
     expect(grid.getState().editing.active?.draft).toBe('Tenant C acknowledged');
     grid.destroy();
@@ -1522,6 +1876,7 @@ describe('grid store', () => {
       }),
       source: createControlledSource({
         datasetKey: 'editing-result',
+        resultDatasetKey: 'editing-result',
         result: { rows: [rows[0]!] },
       }),
     });
@@ -1535,6 +1890,7 @@ describe('grid store', () => {
       }),
       source: createControlledSource({
         datasetKey: 'editing-result',
+        resultDatasetKey: 'editing-result',
         result: { rows: [rows[1]!] },
       }),
     });
@@ -1677,7 +2033,12 @@ describe('grid store', () => {
     const onQueryChange = vi.fn();
     const grid = createGrid<ProjectionRow>({
       definition: gridDefinition,
-      source: createControlledSource({ datasetKey: 'projection', result, onQueryChange }),
+      source: createControlledSource({
+        datasetKey: 'projection',
+        resultDatasetKey: 'projection',
+        result,
+        onQueryChange,
+      }),
     });
     await grid.start();
     onQueryChange.mockClear();
@@ -1687,6 +2048,7 @@ describe('grid store', () => {
       definition: gridDefinition,
       source: createControlledSource({
         datasetKey: 'projection',
+        resultDatasetKey: 'projection',
         result,
         onQueryChange,
         capabilities: { projection: true },
@@ -1705,18 +2067,14 @@ describe('grid store', () => {
     const source = createLocalSource(rows);
     const onStateChange = vi.fn();
     const grid = createGrid<Row>({ definition: firstDefinition, source, onStateChange });
-    const runtime = grid as typeof grid & {
-      getRuntimeRevision: () => number;
-      subscribeRuntime: (listener: () => void) => () => void;
-    };
     const stateListener = vi.fn();
     const runtimeListener = vi.fn();
     grid.subscribe(stateListener);
-    runtime.subscribeRuntime(runtimeListener);
+    grid.subscribeRuntime(runtimeListener);
     const before = grid.getState();
 
     grid.updateOptions({ definition: secondDefinition, source, onStateChange });
-    expect(runtime.getRuntimeRevision()).toBe(1);
+    expect(grid.getRuntimeRevision()).toBe(1);
     expect(runtimeListener).toHaveBeenCalledOnce();
     expect(grid.getState()).toMatchObject(before);
     expect(grid.getState().query).toBe(before.query);
@@ -1726,17 +2084,17 @@ describe('grid store', () => {
     expect(onStateChange).not.toHaveBeenCalled();
 
     grid.updateOptions({ definition: secondDefinition, source, onStateChange });
-    expect(runtime.getRuntimeRevision()).toBe(1);
+    expect(grid.getRuntimeRevision()).toBe(1);
     const firstCleanup = grid.projection.register(['name']);
-    expect(runtime.getRuntimeRevision()).toBe(2);
+    expect(grid.getRuntimeRevision()).toBe(2);
     const secondCleanup = grid.projection.register(['name']);
-    expect(runtime.getRuntimeRevision()).toBe(2);
+    expect(grid.getRuntimeRevision()).toBe(2);
     firstCleanup();
-    expect(runtime.getRuntimeRevision()).toBe(2);
+    expect(grid.getRuntimeRevision()).toBe(2);
     secondCleanup();
-    expect(runtime.getRuntimeRevision()).toBe(3);
+    expect(grid.getRuntimeRevision()).toBe(3);
     secondCleanup();
-    expect(runtime.getRuntimeRevision()).toBe(3);
+    expect(grid.getRuntimeRevision()).toBe(3);
     grid.destroy();
   });
 

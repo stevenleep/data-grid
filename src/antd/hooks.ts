@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGridInstance, useGridSelector } from '../react';
 import {
   stableStringify,
@@ -51,11 +51,19 @@ export function useControllableOpen(
   return [open, setOpen] as const;
 }
 
-export function useGridOptions<Row extends object>(
+export interface GridFieldOptionsResult {
+  options: GridOption[];
+  loading: boolean;
+  error?: Error;
+  /** Retries the current lookup without changing its search or dependencies. */
+  reload: () => void;
+}
+
+export function useGridFieldOptions<Row extends object>(
   field: GridResolvedField<Row> | undefined,
   search = '',
   enabled = true,
-) {
+): GridFieldOptionsResult {
   const instance = useGridInstance<Row>();
   const provider =
     field?.options && !Array.isArray(field.options) && typeof field.options !== 'function'
@@ -80,6 +88,11 @@ export function useGridOptions<Row extends object>(
     loading: false,
   });
   const requestRef = useRef(0);
+  const [reloadToken, setReloadToken] = useState(0);
+  const reload = useCallback(() => {
+    if (field) instance.options.clear(field.id);
+    setReloadToken((current) => current + 1);
+  }, [field, instance]);
 
   useEffect(() => {
     const requestId = ++requestRef.current;
@@ -127,7 +140,16 @@ export function useGridOptions<Row extends object>(
       controller.abort();
       clearTimeout(timer);
     };
-  }, [enabled, facet, field, instance, queryDependency, search]);
+  }, [enabled, facet, field, instance, queryDependency, reloadToken, search]);
 
-  return state;
+  return { ...state, reload };
+}
+
+/** @deprecated Prefer the field-specific `useGridFieldOptions` name. */
+export function useGridOptions<Row extends object>(
+  field: GridResolvedField<Row> | undefined,
+  search = '',
+  enabled = true,
+): GridFieldOptionsResult {
+  return useGridFieldOptions(field, search, enabled);
 }

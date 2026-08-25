@@ -1,4 +1,4 @@
-import { Col, Form, Input, InputNumber, Modal, Radio, Row, Select, Switch } from 'antd';
+import { Alert, App, Col, Form, Input, InputNumber, Modal, Radio, Row, Select, Switch } from 'antd';
 import { useEffect, useState } from 'react';
 import {
   demoCustomers,
@@ -40,11 +40,14 @@ const riskOptions = [
 ];
 
 export function OrderEditor({ open, order, onCancel, onSubmit }: OrderEditorProps) {
+  const { message } = App.useApp();
   const [form] = Form.useForm<OrderFormValues>();
   const [saving, setSaving] = useState(false);
+  const [submitError, setSubmitError] = useState<string>();
 
   useEffect(() => {
     if (!open) return;
+    setSubmitError(undefined);
     form.setFieldsValue(
       order
         ? {
@@ -69,10 +72,20 @@ export function OrderEditor({ open, order, onCancel, onSubmit }: OrderEditorProp
   }, [form, open, order]);
 
   const submit = async () => {
-    const values = await form.validateFields();
+    let values: OrderFormValues;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
     setSaving(true);
+    setSubmitError(undefined);
     try {
       await onSubmit(values);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : '保存失败，请稍后重试。';
+      setSubmitError(text);
+      message.error(text);
     } finally {
       setSaving(false);
     }
@@ -85,9 +98,15 @@ export function OrderEditor({ open, order, onCancel, onSubmit }: OrderEditorProp
       okText={order ? '保存修改' : '创建订单'}
       cancelText="取消"
       confirmLoading={saving}
+      cancelButtonProps={{ disabled: saving }}
+      closable={!saving}
+      keyboard={!saving}
+      mask={{ closable: !saving }}
       width={680}
       destroyOnHidden
-      onCancel={onCancel}
+      onCancel={() => {
+        if (!saving) onCancel();
+      }}
       onOk={() => void submit()}
     >
       <Form<OrderFormValues>
@@ -96,11 +115,14 @@ export function OrderEditor({ open, order, onCancel, onSubmit }: OrderEditorProp
         requiredMark="optional"
         className="order-editor"
       >
+        {submitError ? (
+          <Alert className="order-editor__error" type="error" showIcon title={submitError} />
+        ) : null}
         <Form.Item label="订单号">
           <Input value={order?.orderNo || '保存后自动生成'} disabled />
         </Form.Item>
         <Row gutter={16}>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <Form.Item name="customerId" label="客户" rules={[{ required: true }]}>
               <Select
                 showSearch
@@ -109,14 +131,14 @@ export function OrderEditor({ open, order, onCancel, onSubmit }: OrderEditorProp
               />
             </Form.Item>
           </Col>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <Form.Item name="ownerId" label="负责人" rules={[{ required: true }]}>
               <Select options={demoOwners.map((item) => ({ label: item.name, value: item.id }))} />
             </Form.Item>
           </Col>
         </Row>
         <Row gutter={16}>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <Form.Item
               name="amount"
               label="订单金额"
@@ -131,7 +153,7 @@ export function OrderEditor({ open, order, onCancel, onSubmit }: OrderEditorProp
               />
             </Form.Item>
           </Col>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <Form.Item name="status" label="状态" rules={[{ required: true }]}>
               <Select options={statusOptions} />
             </Form.Item>

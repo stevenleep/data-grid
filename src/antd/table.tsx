@@ -250,6 +250,7 @@ export function GridTable<Row extends object>({
     (state) => state.query.filters,
   );
   const keyword = useGridSelector<Row, string>((state) => state.query.keyword);
+  const maximumSorts = instance.capabilities.sort.max;
   const wrapRef = useRef<HTMLDivElement>(null);
   const guideRef = useRef<HTMLDivElement>(null);
   const resizeCleanupRef = useRef<() => void>(() => undefined);
@@ -406,13 +407,10 @@ export function GridTable<Row extends object>({
           </div>
         ),
         sorter:
-          field?.sort && instance.capabilities.sort.max > 0
-            ? instance.capabilities.sort.max > 1
+          field?.sort && maximumSorts > 0
+            ? maximumSorts > 1
               ? {
-                  multiple: Math.max(
-                    1,
-                    activeSortIndex < 0 ? 1 : instance.capabilities.sort.max - activeSortIndex,
-                  ),
+                  multiple: Math.max(1, activeSortIndex < 0 ? 1 : maximumSorts - activeSortIndex),
                 }
               : true
             : undefined,
@@ -539,6 +537,7 @@ export function GridTable<Row extends object>({
     locale.actions,
     locale.renderFailed,
     locale.resizeColumn,
+    maximumSorts,
     onCellClick,
     rowActionConfig,
     sorts,
@@ -672,7 +671,6 @@ export function GridTable<Row extends object>({
     rawSorts.forEach((sort) => {
       if (!nextSorts.some((current) => current.fieldId === sort.fieldId)) nextSorts.push(sort);
     });
-    const maximumSorts = instance.capabilities.sort.max;
     const addedFieldIds = new Set(
       rawSorts
         .filter((sort) => !sorts.some((current) => current.fieldId === sort.fieldId))

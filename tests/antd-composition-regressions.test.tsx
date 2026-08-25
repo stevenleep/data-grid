@@ -773,6 +773,7 @@ describe('AntD composition regressions', () => {
 
   it('resets a root render failure through the built-in retry control and reports it', async () => {
     const onError = vi.fn();
+    const onRenderError = vi.fn();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let fail = true;
     function Thrower() {
@@ -789,6 +790,7 @@ describe('AntD composition regressions', () => {
             definition={definition('retry-render-boundary', [{ id: 'name', title: 'Name' }])}
             source={createLocalSource([ada])}
             onError={onError}
+            onRenderError={onRenderError}
             toolbar={false}
             footer={false}
           >
@@ -807,6 +809,12 @@ describe('AntD composition regressions', () => {
       expect.objectContaining({ message: 'temporary render failure' }),
       expect.objectContaining({ type: 'render.error' }),
     );
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onRenderError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'temporary render failure' }),
+      expect.objectContaining({ componentStack: expect.any(String) }),
+    );
+    expect(onRenderError).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
   });
 
@@ -1102,6 +1110,60 @@ describe('AntD composition regressions', () => {
     expect(screen.getByRole('status', { name: 'filter root' })).toHaveTextContent('and:false:0');
   });
 
+  it('uses relation identity and label metadata in active and readonly filter surfaces', () => {
+    const filters = createFilterGroup('and', [
+      createFilterCondition('owner', 'containsAny', [
+        { customerCode: 'C7', legacyKey: 'legacy-7', displayName: 'Ada CRM' },
+        { customerCode: 'C8', legacyKey: 'wrong-key' },
+        { legacyKey: 'C9' },
+      ]),
+    ]);
+    const { container } = render(
+      <DataGrid<Row>
+        definition={definition('relation-filter-labels', [
+          { id: 'name', title: 'Name', filter: true },
+          {
+            id: 'owner',
+            title: 'Owner',
+            relation: {
+              target: 'crm.customer',
+              cardinality: 'many',
+              keyField: 'legacyKey',
+              labelField: 'displayName',
+            },
+            getIdentity: (value) => {
+              if (!value || typeof value !== 'object') return undefined;
+              const customerCode = (value as { customerCode?: unknown }).customerCode;
+              return typeof customerCode === 'string' ? customerCode : undefined;
+            },
+            filter: true,
+            options: [
+              { label: 'Customer Seven', value: 'C7' },
+              { label: 'Customer Eight', value: 'C8' },
+              { label: 'Customer Nine', value: 'C9' },
+            ],
+          },
+        ])}
+        source={createLocalSource([{ ...ada, owner: [] }])}
+        defaultState={{ query: { filters } }}
+        toolbar={false}
+        footer={false}
+      >
+        <>
+          <GridActiveFilters<Row> />
+          <FilterPanelWithSubset value={filters} onApply={() => undefined} />
+        </>
+      </DataGrid>,
+    );
+
+    expect(container.querySelector('.hui-grid__active-filters .ant-tag')).toHaveTextContent(
+      'Ada CRM, Customer Eight, Customer Nine',
+    );
+    expect(container.querySelector('.hui-grid__filter-readonly-value')).toHaveTextContent(
+      'Ada CRM, Customer Eight, Customer Nine',
+    );
+  });
+
   it('keeps out-of-subset active filters readonly when removing or clearing chips', () => {
     const filters = createFilterGroup('and', [
       createFilterCondition('name', 'equals', 'Ada'),
@@ -1146,6 +1208,7 @@ describe('AntD composition regressions', () => {
             excludedKeys: [],
           },
         }}
+        stateDatasetKey="current-dataset"
         selection
         toolbar={false}
         footer={false}

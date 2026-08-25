@@ -82,7 +82,7 @@ transport: {
 
 ## 搜索
 
-Remote 模式直接发送 `keyword`。Local 模式调用各字段的 `searchText`；未声明时使用值类型默认文本转换。
+Remote 模式直接发送 `keyword`。Local 模式优先调用字段显式声明的 `searchText`；relation 字段未声明时，会按每个关联值的 `relation.labelField`、`label` / `name` / `title`、identity 依次生成搜索文本（包括 `cardinality: 'many'`），其他字段再使用值类型默认文本转换。
 
 ## 筛选
 
@@ -96,6 +96,14 @@ Remote 模式直接发送 `keyword`。Local 模式调用各字段的 `searchText
 后端应按能力声明支持操作符，并对未知字段或操作符返回明确错误。
 
 Core 会在执行或发送前规范化筛选树：删除空嵌套组，并按操作符校验值形状。`between` / `notBetween` 必须恰好有两个非空值；集合操作符必须使用非空数组；空值、布尔和相对日期操作符不能携带值。`context` 和筛选值必须是有限数值组成的 JSON-safe 数据，`NaN`、`Infinity`、循环引用和 class 实例会被拒绝。
+
+### Local 日期语义
+
+Local 执行只会对声明为 `date` / `dateTime` 的字段启用日期解析。`date` 按 `temporal.timeZone` 中的日历日执行 `equals`、范围、相对日期和排序；`dateTime` 按绝对时刻执行 equality、范围和排序，相对日期操作符再把该时刻投影到该时区。默认时区为 UTC。
+
+合法输入为 `Date`、Unix 毫秒时间戳、`YYYY-MM-DD` 或 ISO `T` 日期时间。ISO offset 会被保留；offsetless 日期时间按 UTC，而不是运行设备的本地时区。无效日期和非 ISO 地区字符串不会被 `Date.parse` 宽松修正。查询树本身必须保持 JSON-safe，所以 `Date` row 值对应的 filter value 应传 ISO 字符串或毫秒时间戳。
+
+该规范让浏览器、SSR、测试机和不同时区管理员得到相同结果。Remote / Controlled 模式只传输 request，服务端仍需遵守相同语义；如果后端协议不同，应在 source adapter 或 `transport.encodeFilter` 中显式转换。
 
 ### 自定义操作符的值协议
 
@@ -148,6 +156,10 @@ const definition = defineGrid<Order>({
 ```
 
 字符串 `rowKey` 会自动使用同名字段的 `selectKey`，没有同名字段时直接使用该字符串；path `rowKey` 只有在能匹配一个字段 path 时才会自动映射。显式设置 `query.projection = []` 表示只请求这些必需 key，而不是退回全部可见列。
+
+`select` 是传输层的取数提示，不会改变 `GridReadResult<Row>` 的类型契约。远端接口如果返回稀疏 DTO，数据源 adapter 必须先把它物化成 definition 声明的 `Row`（或把 Grid 的 `Row` 本身建模为可选字段结构），再返回给 Core。不要把部分对象断言成完整业务实体；否则 renderer、row action 和权限函数会在运行时读到并不存在的字段。
+
+派生字段按物化归属编译投影：`derivation.binding: 'source'` 请求派生字段自己的 `selectKey`；`runtime` 不请求可能根本不存在于 API 的输出 key，而是递归请求语义 dependencies。两种模式都会合并显式的原始 `transport.selectDependencies`。
 
 函数形式的 `rowKey` 如果会随 React render 重建，应提供稳定的 `rowKeyIdentity`。Core 用这个语义身份判断定义是否真的切换，不能使用函数对象地址代替业务身份；改变取 key 的规则时同时改变 identity。
 

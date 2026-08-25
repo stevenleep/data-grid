@@ -17,6 +17,38 @@
 
 `toolbar={false}` 或 `footer={false}` 可关闭对应区域。
 
+五个稳定区域还可通过 slots 替换或包裹。直接传节点表示替换；函数会收到默认内容与实例，可在不复制官方配方的情况下前后插入业务 UI：
+
+```tsx
+<DataGrid
+  definition={definition}
+  source={source}
+  slots={{
+    toolbar: (defaults, grid) => (
+      <>
+        <BusinessScope dataset={grid.definition.id} />
+        {defaults}
+      </>
+    ),
+    status: <BusinessStatus />,
+    footer: (defaults) => <StickyFooter>{defaults}</StickyFooter>,
+  }}
+/>
+```
+
+## 只渲染已有实例
+
+`DataGridView` 把实例生命周期与官方 AntD 配方分开。它不会调用 `start`、`stop`、`updateOptions` 或 `destroy`；这些必须由实例所有者负责。通过 `useGrid` 创建时，Hook 已负责启动、更新和停止：
+
+```tsx
+function OrdersGrid() {
+  const grid = useGrid({ definition, source, persistence });
+  return <DataGridView grid={grid} slots={{ table: wrapBusinessTable }} />;
+}
+```
+
+如果通过 Core 的 `createGrid` 创建，则由业务显式管理 `await grid.start()` 和最终 `grid.destroy()`。同一个实例可以交给不同 renderer，但不要同时挂载两个会竞争同一交互状态的可编辑视图。
+
 ## 重组公共组件
 
 ```tsx

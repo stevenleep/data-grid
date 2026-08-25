@@ -137,7 +137,7 @@ export function OrderList() {
 }
 ```
 
-`temporal` 是 Local 数据源相对日期操作符（如 `today`、`thisWeek`）的时间语义。`timeZone` 使用 IANA 时区，默认 `UTC`；`weekStartsOn` 使用 0（周日）到 6（周六），默认 1（周一）。可在测试或可重放业务中传入 `now: () => fixedDate`；生产实时时钟应每次返回当前时间。Remote/Controlled 后端仍需定义并实现同样的时区与周起始协议。
+`temporal` 是 Local 数据源的日期时间上下文。`timeZone` 使用 IANA 时区，默认 `UTC`，同时控制 `date` 字段中 instant-like 值的日历日 equality / 范围 / 排序，以及 `today`、`thisWeek` 等相对操作符；`dateTime` 的普通比较始终按绝对时刻。`weekStartsOn` 使用 0（周日）到 6（周六），默认 1（周一）。可在测试或可重放业务中传入 `now: () => fixedDate`；生产实时时钟应每次返回当前时间。Remote/Controlled 后端仍需定义并实现同样的时区与周起始协议。
 
 默认配方已经包含视图、字段设置、筛选、排序、搜索、工具栏动作、表格、汇总、总数和分页。
 
@@ -148,4 +148,4 @@ pnpm install
 pnpm demo
 ```
 
-Demo 包含真实可操作的新增、查看、编辑、删除、复制、筛选、排序、分页、批量动作、行点击和值点击。
+Demo 包含真实可操作的新增、查看、编辑、删除、复制、筛选、排序、分页、批量动作、行/值点击，以及 Local / Remote / Controlled 数据源和加载、空态、错误恢复场景。完整验收路径见 `examples/demo/README.md`。

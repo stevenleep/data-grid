@@ -4,6 +4,14 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@huiyun/data-grid": ["./src/index.ts"],
+      "@huiyun/data-grid/core": ["./src/core/index.ts"],
+      "@huiyun/data-grid/react": ["./src/react/index.ts"],
+      "@huiyun/data-grid/antd": ["./src/antd/index.ts"],
+      "@huiyun/data-grid/style.css": ["./style.d.ts"]
+    },
     "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,

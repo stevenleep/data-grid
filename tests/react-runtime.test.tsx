@@ -97,6 +97,7 @@ function CapabilityHarness() {
     definition: capabilityDefinition,
     source: createControlledSource({
       datasetKey: 'same-result',
+      resultDatasetKey: 'same-result',
       result: capabilityResult,
       capabilities: { projection },
     }),
@@ -114,6 +115,27 @@ function CapabilityHarness() {
 }
 
 describe('React grid runtime updates', () => {
+  it('accepts a legacy provider instance without the 0.2 runtime observable', () => {
+    const instance = createGrid<Row>({
+      definition: capabilityDefinition,
+      source: localSource,
+    });
+    const legacyInstance = new Proxy(instance, {
+      get(target, property, receiver) {
+        if (property === 'getRuntimeRevision' || property === 'subscribeRuntime') return undefined;
+        return Reflect.get(target, property, receiver);
+      },
+    }) as GridInstance<Row>;
+    const rendered = render(
+      <GridProvider value={legacyInstance}>
+        <CapabilityValue />
+      </GridProvider>,
+    );
+    expect(screen.getByText('projection-off')).toBeInTheDocument();
+    rendered.unmount();
+    instance.destroy();
+  });
+
   it('rerenders consumers after a same-revision definition runtime replacement', async () => {
     render(<DefinitionHarness />);
     expect(screen.getByText('First runtime')).toBeInTheDocument();

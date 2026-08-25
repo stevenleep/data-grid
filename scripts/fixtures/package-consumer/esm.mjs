@@ -14,6 +14,18 @@ assert.equal(typeof root.defineGrid, 'function');
 assert.equal(root.defineGrid, core.defineGrid);
 assert.equal(typeof react.GridProvider, 'function');
 assert.equal(typeof antd.DataGrid, 'function');
+assert.equal(typeof antd.DataGridView, 'function');
+assert.equal(typeof antd.supportsGridDefaultEditor, 'function');
+assert.equal(typeof root.DataGridView, 'function');
+
+// The framework entrypoints intentionally expose Core contracts as types only.
+// Guard the runtime layer boundary so a future `export *` does not silently pull
+// the store/query implementation into renderer-only bundles.
+assert.equal(Object.hasOwn(react, 'createGrid'), false);
+assert.equal(Object.hasOwn(react, 'defineGrid'), false);
+assert.equal(Object.hasOwn(antd, 'createGrid'), false);
+assert.equal(Object.hasOwn(antd, 'defineGrid'), false);
+assert.equal(Object.hasOwn(core, 'DataGrid'), false);
 
 const stylesheetUrl = import.meta.resolve('@huiyun/data-grid/style.css');
 assert.match(stylesheetUrl, /style\.css$/);

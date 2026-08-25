@@ -261,6 +261,75 @@ export interface GridFieldTransport<Value = unknown> {
   encodeValue?: (value: Value) => GridJsonValue | undefined;
 }
 
+/**
+ * Field-local operations exposed by the resolved model. Effective support can
+ * still be constrained by the active data source and application policy.
+ */
+export interface GridFieldCapabilities {
+  readonly search: boolean;
+  readonly filter: boolean;
+  readonly sort: boolean;
+  readonly edit: boolean;
+}
+
+/** Optional semantic metadata for a relation value; it never performs a fetch. */
+export interface GridFieldRelation {
+  readonly target: string;
+  readonly cardinality: 'one' | 'many';
+  readonly keyField?: string;
+  readonly labelField?: string;
+}
+
+/** The owner responsible for materializing a derived field value. */
+export type GridFieldDerivationBinding = 'source' | 'runtime';
+
+export interface GridFormulaDerivation {
+  readonly kind: 'formula';
+  /** Semantic ids of local fields consumed by the formula. */
+  readonly dependencies: readonly string[];
+  /** Opaque descriptive expression. Grid Core never parses or evaluates it. */
+  readonly expression?: string;
+  readonly binding?: GridFieldDerivationBinding;
+}
+
+export interface GridLookupDerivation {
+  readonly kind: 'lookup';
+  /** Local relation field used to reach the target record(s). */
+  readonly relationField: string;
+  /** Semantic field id in the related resource. */
+  readonly targetField: string;
+  /** Additional local dependencies beyond relationField. */
+  readonly dependencies?: readonly string[];
+  readonly binding?: GridFieldDerivationBinding;
+}
+
+export type GridRollupAggregate =
+  'count' | 'countDistinct' | 'sum' | 'average' | 'min' | 'max' | (string & {});
+
+export interface GridRollupDerivation {
+  readonly kind: 'rollup';
+  /** Local relation field whose related values are aggregated. */
+  readonly relationField: string;
+  /** Semantic field id in the related resource; optional for record counts. */
+  readonly targetField?: string;
+  readonly aggregate: GridRollupAggregate;
+  /** Additional local dependencies beyond relationField. */
+  readonly dependencies?: readonly string[];
+  readonly binding?: GridFieldDerivationBinding;
+}
+
+/**
+ * Declarative provenance for a derived value. This is JSON-safe metadata, not
+ * an evaluation language or a cross-resource data engine.
+ */
+export type GridFieldDerivation =
+  GridFormulaDerivation | GridLookupDerivation | GridRollupDerivation;
+
+export type GridResolvedFieldDerivation = GridFieldDerivation & {
+  readonly dependencies: readonly string[];
+  readonly binding: GridFieldDerivationBinding;
+};
+
 export interface GridFieldFilter {
   enabled?: boolean;
   operators?: GridFilterOperator[];
@@ -329,6 +398,10 @@ export interface GridFieldDefinition<Row extends object, Value = unknown> {
   path?: GridPath;
   accessor?: (row: Row) => Value;
   normalize?: (value: unknown, row: Row) => Value;
+  /** Participates in local keyword matching. Defaults to true. */
+  search?: boolean;
+  relation?: GridFieldRelation;
+  derivation?: GridFieldDerivation;
   transport?: GridFieldTransport<Value>;
   filter?: boolean | GridFieldFilter;
   sort?: boolean | GridFieldSort;
@@ -368,6 +441,9 @@ export interface GridResolvedField<Row extends object, Value = unknown> {
   title: GridNode;
   valueType: GridValueType;
   path: GridPath;
+  relation?: GridFieldRelation;
+  derivation?: GridResolvedFieldDerivation;
+  capabilities: GridFieldCapabilities;
   transport: Required<Pick<GridFieldTransport<Value>, 'filterKey' | 'sortKey' | 'selectKey'>> &
     GridFieldTransport<Value>;
   filter: false | (Required<Pick<GridFieldFilter, 'enabled'>> & GridFieldFilter);
@@ -412,6 +488,10 @@ export interface GridFieldSchema {
   title: string;
   valueType?: GridValueType;
   path?: GridPath;
+  /** Participates in local keyword matching. Defaults to true. */
+  search?: boolean;
+  relation?: GridFieldRelation;
+  derivation?: GridFieldDerivation;
   transport?: Omit<GridFieldTransport, 'encodeFilter' | 'encodeValue'>;
   filter?: boolean | GridFieldFilter;
   sort?: boolean | GridFieldSort;
@@ -706,6 +786,12 @@ export interface GridRemoteSource<Row extends object> {
   mode: 'remote';
   /** Stable logical dataset/tenant identity used to isolate requests and caches. */
   datasetKey?: string;
+  /**
+   * Stable identity of the transport/adapter implementation. Change it when
+   * endpoint semantics, credentials or adapter behavior changes without
+   * changing the logical dataset.
+   */
+  driverKey?: string | number;
   read: (input: GridReadInput<Row>) => Promise<GridReadResult<Row>>;
   capabilities?: GridCapabilities;
   policy?: {
@@ -723,16 +809,49 @@ export interface GridLocalSource<Row extends object> {
   capabilities?: GridCapabilities;
 }
 
-export interface GridControlledSource<Row extends object> {
-  mode: 'controlled';
+/**
+ * An externally-owned Controlled request failure and the provenance of the
+ * request that produced it. Core only exposes the failure when both the
+ * request and dataset identities match the currently rendered scope.
+ */
+export interface GridControlledError {
+  value: unknown;
+  requestSignature: string;
   datasetKey?: string;
+}
+
+type GridControlledDatasetOptions =
+  | {
+      /** Current logical dataset/tenant identity. */
+      datasetKey: string;
+      /** Dataset identity that actually produced `result`; it may lag during a transition. */
+      resultDatasetKey: string;
+      /** A failure envelope must identify the dataset that produced it independently of result. */
+      error?: GridControlledError & { datasetKey: string };
+    }
+  | {
+      datasetKey?: undefined;
+      resultDatasetKey?: undefined;
+      error?: GridControlledError & { datasetKey?: undefined };
+    };
+
+export type GridControlledSourceOptions<Row extends object> = {
   result: GridReadResult<Row>;
+  /**
+   * Identity of the request that actually produced `result`. A dynamic source
+   * may omit it only for the result already present at its first query
+   * handshake. Every later result object must carry explicit provenance.
+   */
+  resultRequestSignature?: string;
   loading?: boolean;
   refreshing?: boolean;
-  error?: unknown;
   capabilities?: GridCapabilities;
   onQueryChange?: (query: GridQuery, request: GridRequestQuery, event: GridEvent) => void;
-}
+} & GridControlledDatasetOptions;
+
+export type GridControlledSource<Row extends object> = GridControlledSourceOptions<Row> & {
+  mode: 'controlled';
+};
 
 export type GridDataSource<Row extends object> =
   GridRemoteSource<Row> | GridLocalSource<Row> | GridControlledSource<Row>;
@@ -752,6 +871,8 @@ export type GridSelectionState =
   | {
       mode: 'allMatching';
       querySignature: string;
+      /** Dataset revision captured when all-matching selection was entered. */
+      snapshotId?: string;
       excludedKeys: GridRowKey[];
       total: number;
     };
@@ -759,6 +880,10 @@ export type GridSelectionState =
 export interface GridDataState<Row extends object> extends GridReadResult<Row> {
   status: 'idle' | 'loading' | 'success' | 'error';
   fetching: boolean;
+  /** Signature of the request that produced the currently visible rows. */
+  requestSignature?: string;
+  /** Visible rows belong to an earlier request and are shown while fetching. */
+  placeholder?: boolean;
   error?: Error;
   requestId?: number;
   updatedAt?: number;
@@ -865,10 +990,32 @@ export interface GridInitialState<Row extends object> {
   data?: Partial<GridDataState<Row>>;
 }
 
+/** Query domains that may be deliberately retained across a dataset boundary. */
+export type GridDatasetQuerySlice = 'keyword' | 'filters' | 'sorts' | 'context' | 'projection';
+
+/**
+ * Explicit opt-ins for state that is safe to reuse when `source.datasetKey`
+ * changes. Grid-owned pagination is always reset and entity-bound state is
+ * never carried implicitly; controlled state can acknowledge the new dataset
+ * with `stateDatasetKey` instead.
+ */
+export interface GridDatasetTransitionOptions {
+  preserveQuery?: boolean | readonly GridDatasetQuerySlice[];
+  preserveViews?: boolean;
+}
+
 export interface GridOptions<Row extends object> {
   definition: GridDefinition<Row> | GridResolvedDefinition<Row>;
   source: GridDataSource<Row>;
   state?: Partial<GridState<Row>>;
+  /**
+   * Dataset provenance for dataset-sensitive controlled slices in `state`
+   * (`query`, `views`, `data`, `selection`, `editing`, and `actions`). Required
+   * when any of those slices is supplied together with `source.datasetKey`.
+   */
+  stateDatasetKey?: string;
+  /** Safe-by-default behavior when the logical source dataset changes. */
+  datasetTransition?: GridDatasetTransitionOptions;
   defaultState?: GridInitialState<Row>;
   persistence?: GridPersistence<Row> | false;
   temporal?: GridTemporalContext;
@@ -976,7 +1123,21 @@ export interface GridProjectionApi {
   getRequiredFields: () => readonly string[];
 }
 
-export interface GridInstance<Row extends object> {
+/**
+ * Observable snapshot for runtime values that are intentionally kept outside
+ * {@link GridState}, such as resolved definition metadata, capabilities, and
+ * renderer projection requirements.
+ *
+ * The revision is monotonically increasing for the lifetime of an instance.
+ * Consumers should subscribe before reading it, following the external-store
+ * contract used by `useSyncExternalStore`.
+ */
+export interface GridRuntimeObservable {
+  getRuntimeRevision: () => number;
+  subscribeRuntime: (listener: () => void) => () => void;
+}
+
+export interface GridInstance<Row extends object> extends GridRuntimeObservable {
   readonly definition: GridResolvedDefinition<Row>;
   readonly capabilities: GridResolvedCapabilities;
   readonly query: GridQueryApi;

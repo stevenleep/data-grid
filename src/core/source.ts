@@ -1,6 +1,7 @@
 import type {
   GridCapabilities,
   GridControlledSource,
+  GridControlledSourceOptions,
   GridDataSource,
   GridLocalSource,
   GridOption,
@@ -203,6 +204,15 @@ export function resolveGridCapabilities<Row extends object>(
     throw new Error('Grid source datasetKey must be a non-empty string.');
   }
   if (source.mode === 'remote') {
+    if (
+      source.driverKey !== undefined &&
+      !(
+        (typeof source.driverKey === 'string' && source.driverKey.trim()) ||
+        (typeof source.driverKey === 'number' && Number.isFinite(source.driverKey))
+      )
+    ) {
+      throw new Error('Grid source driverKey must be a non-empty string or finite number.');
+    }
     if (typeof source.read !== 'function') {
       throw new Error('Remote grid sources require a read function.');
     }
@@ -241,6 +251,50 @@ export function resolveGridCapabilities<Row extends object>(
     if (source.onQueryChange !== undefined && typeof source.onQueryChange !== 'function') {
       throw new Error('Controlled grid source onQueryChange must be a function.');
     }
+    if (
+      source.resultRequestSignature !== undefined &&
+      (typeof source.resultRequestSignature !== 'string' || !source.resultRequestSignature.trim())
+    ) {
+      throw new Error('Controlled grid source resultRequestSignature must be a non-empty string.');
+    }
+    if (
+      source.datasetKey !== undefined &&
+      (typeof source.resultDatasetKey !== 'string' || !source.resultDatasetKey.trim())
+    ) {
+      throw new Error(
+        'Controlled grid sources with datasetKey require a non-empty resultDatasetKey.',
+      );
+    }
+    if (source.datasetKey === undefined && source.resultDatasetKey !== undefined) {
+      throw new Error('Controlled grid source resultDatasetKey requires datasetKey.');
+    }
+    if (source.error !== undefined) {
+      if (
+        !isPlainRecord(source.error) ||
+        !Object.prototype.hasOwnProperty.call(source.error, 'value')
+      ) {
+        throw new Error('Controlled grid source error must be a provenance envelope.');
+      }
+      if (
+        typeof source.error.requestSignature !== 'string' ||
+        !source.error.requestSignature.trim()
+      ) {
+        throw new Error(
+          'Controlled grid source error.requestSignature must be a non-empty string.',
+        );
+      }
+      if (
+        source.datasetKey !== undefined &&
+        (typeof source.error.datasetKey !== 'string' || !source.error.datasetKey.trim())
+      ) {
+        throw new Error(
+          'Controlled grid sources with datasetKey require error.datasetKey provenance.',
+        );
+      }
+      if (source.datasetKey === undefined && source.error.datasetKey !== undefined) {
+        throw new Error('Controlled grid source error.datasetKey requires source.datasetKey.');
+      }
+    }
   }
   const defaults = source.mode === 'local' ? localDefaults : remoteDefaults;
   const input = source.capabilities;
@@ -264,6 +318,7 @@ export function createRemoteSource<Row extends object>(
   read: GridRemoteSource<Row>['read'],
   options?: {
     datasetKey?: string;
+    driverKey?: string | number;
     capabilities?: GridCapabilities;
     policy?: GridRemoteSource<Row>['policy'];
   },
@@ -272,6 +327,7 @@ export function createRemoteSource<Row extends object>(
   input: Omit<GridRemoteSource<Row>, 'mode'> | GridRemoteSource<Row>['read'],
   options: {
     datasetKey?: string;
+    driverKey?: string | number;
     capabilities?: GridCapabilities;
     policy?: GridRemoteSource<Row>['policy'];
   } = {},
@@ -290,7 +346,7 @@ export function createLocalSource<Row extends object>(
 }
 
 export function createControlledSource<Row extends object>(
-  source: Omit<GridControlledSource<Row>, 'mode'>,
+  source: GridControlledSourceOptions<Row>,
 ): GridControlledSource<Row> {
   return { mode: 'controlled', ...source };
 }
@@ -470,7 +526,13 @@ export function sourceDataIdentity<Row extends object>(source: GridDataSource<Ro
   if (source.mode === 'remote') {
     return [
       source.datasetKey,
-      source.read,
+      source.driverKey,
+      // A declared dataset key is the semantic identity. React is then free to
+      // refresh an inline reader closure without turning a render into a source
+      // replacement, cache clear and forced reload. driverKey lets applications
+      // invalidate the adapter independently. Without either key we preserve
+      // the conservative legacy behavior and use the reader as the boundary.
+      source.datasetKey === undefined && source.driverKey === undefined ? source.read : undefined,
       capabilitiesIdentity(source.capabilities),
       stableStringify({
         cacheTime: source.policy?.cacheTime,
@@ -485,11 +547,14 @@ export function sourceDataIdentity<Row extends object>(source: GridDataSource<Ro
   }
   return [
     source.datasetKey,
+    source.resultDatasetKey,
     source.result,
+    source.resultRequestSignature,
     source.loading,
     source.refreshing,
-    source.error,
+    source.error?.datasetKey,
+    source.error?.requestSignature,
+    source.error?.value,
     capabilitiesIdentity(source.capabilities),
-    source.onQueryChange,
   ];
 }

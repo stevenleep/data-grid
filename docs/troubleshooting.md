@@ -7,9 +7,12 @@
 1. source 是否真的是新数据语义；Remote source 身份变化会刷新。
 2. 受控 `state.query` 是否在 `onStateChange` 后写回。
 3. Controlled source 是否在 `onQueryChange` 中触发外部查询。
-4. 是否错误地在外层缓存了旧 request。
+4. 动态 Controlled 的新结果是否携带产生它的 `resultRequestSignature`；错误是否使用匹配请求/数据集的 `{ value, requestSignature, datasetKey? }` envelope。首次握手后，克隆旧结果不会被当作新结果接收。
+5. 是否错误地在外层缓存了旧 request。
 
 Remote source 未设置 `datasetKey` 时，`read` 函数引用变化会被视为数据集切换；如果 source 在 render 内创建，请稳定 reader 引用或显式设置数据集键。
+
+若切换租户后筛选或视图被清空，这是默认的数据边界保护。只为确认与租户无关的域配置 `datasetTransition`；若 query/views 由业务受控，则应把新 slice 与新的 `stateDatasetKey` 原子写回。
 
 需要强制刷新时调用 `instance.data.reload()`；需要清除当前请求缓存再刷新时调用 `instance.data.invalidate()`。
 

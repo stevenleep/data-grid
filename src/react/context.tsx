@@ -57,6 +57,8 @@ export interface GridProviderProps<Row extends object> {
 }
 
 export function GridProvider<Row extends object>({ value, children }: GridProviderProps<Row>) {
+  // Keep the provider runtime-tolerant of 0.1 instances and lightweight test
+  // doubles. Library-created 0.2 instances always expose the observable.
   const runtime = value as GridInstance<Row> & GridRuntimeSubscription;
   const runtimeRevision = useSyncExternalStore(
     runtime.subscribeRuntime || emptyRuntimeSubscribe,

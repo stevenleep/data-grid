@@ -8,7 +8,7 @@
 
 ## 特性
 
-- 语义字段 `GridField` 与展示列 `GridColumn` 分离，支持嵌套字段、计算字段、分组表头和纯展示列。
+- 语义字段 `GridField` 与展示列 `GridColumn` 分离，支持嵌套字段、关系/公式/lookup/rollup 元数据、分组表头和纯展示列。
 - local、remote、controlled 三种显式数据源；remote 请求支持取消、latest-wins、去重、缓存、旧数据保留和页码纠正。
 - UI 查询自动编译为不含临时 id 的传输协议；字段可分别声明 filter、sort、select key。
 - offset 分页优先，同时支持服务端 cursor 分页、未知总数和估算总数。
@@ -16,7 +16,7 @@
 - 集中管理异步动作、单元格编辑、校验、乐观更新、失败回滚和加载错误。
 - 命名视图、列宽/顺序/显隐/固定、密度与可替换的持久化协议。
 - 完整受控或按 slice 受控；核心实例稳定，React 订阅按 selector 更新。
-- 默认组件只是官方配方，所有工具栏、面板、表格、页脚和单元格均可独立组合。
+- 默认组件只是官方配方；`DataGridView`、稳定 slots、组件注册表及所有工具栏、面板、表格、页脚和单元格均可独立组合。
 - ESM、CommonJS、TypeScript declarations 与独立样式文件；支持按层级导入。
 
 ## 完整文档
@@ -68,7 +68,7 @@ import '@huiyun/data-grid/style.css';
 
 ## 交互 Demo
 
-仓库内提供了一个完整的 Vite Demo，包含可执行的订单 CRUD 工作台和自由组合配方。新增、详情、表单编辑、删除、复制、筛选、排序、搜索、分页、字段设置、命名视图、行/值点击、跨页选择、批量操作、汇总、单元格快捷编辑、持久化及远程请求协议都可以直接操作。
+仓库内提供了一个完整的 Vite Demo，包含订单 CRUD 工作台、Local / Remote / Controlled 数据源与异常状态实验室、自由组合配方和内嵌开发文档。新增、详情、表单编辑、删除、复制、筛选、排序、搜索、分页、字段设置、命名视图、行/值点击、跨页选择、批量操作、汇总、单元格快捷编辑、持久化、真实 CSV 导出及远程请求协议都可以直接操作。详细验收路径见 [Demo README](https://github.com/stevenleep/data-grid/blob/main/examples/demo/README.md)。
 
 ```bash
 pnpm install
@@ -167,6 +167,8 @@ const definition = defineGrid<Order>({
 });
 
 const source = createRemoteSource<Order>({
+  datasetKey: 'orders',
+  driverKey: 'orders-api:v1',
   capabilities: {
     pagination: 'offset',
     search: true,
@@ -240,6 +242,8 @@ const definition = defineGrid<Order>({
 
 未知 value type 会在 definition 解析时直接报错，避免把协议拼写错误静默显示成文本。通过 `definition.valueTypes` 注册后，可提供 codec、比较、搜索、筛选、渲染与编辑行为。
 
+Local 模式中，`date` 按 `temporal.timeZone` 的日历日比较，`dateTime` 按绝对时刻比较；二者统一支持 `Date`、Unix 毫秒和 ISO 字符串。无 offset 的 ISO 日期时间固定按 UTC，普通数值字段不会被猜成日期。完整格式与 Remote 对齐规则见[字段语义](./docs/definition.md#内置值类型)和[查询协议](./docs/query-protocol.md#local-日期语义)。
+
 ## 数据源
 
 ### Local
@@ -269,14 +273,22 @@ const source = createRemoteSource<Order>(
 已有 React Query、SWR、路由 loader 或业务数据层时，由外部提供结果和加载状态：
 
 ```tsx
+const datasetKey = `${tenantId}:orders`;
+const requestSignature = getRequestSignature(request);
+const envelope = query.data ?? {
+  datasetKey,
+  requestSignature,
+  result: { rows: [] as Order[] },
+};
+
 const source = createControlledSource<Order>({
-  result: {
-    rows: query.data?.items ?? [],
-    total: query.data ? { value: query.data.total, accuracy: 'exact' } : undefined,
-  },
+  datasetKey,
+  resultDatasetKey: envelope.datasetKey,
+  result: envelope.result,
+  resultRequestSignature: envelope.requestSignature,
   loading: query.isLoading,
   refreshing: query.isFetching && !query.isLoading,
-  error: query.error,
+  error: query.error ? { value: query.error, datasetKey, requestSignature } : undefined,
   capabilities,
   onQueryChange: (_uiQuery, request, event) => {
     setRequest(request);
@@ -286,6 +298,8 @@ const source = createControlledSource<Order>({
 
 <DataGrid definition={definition} source={source} />;
 ```
+
+动态 Controlled source 第一次查询握手前已有的 bootstrap result 可以不带请求签名；握手后，每个新 result（包括旧数据的浅拷贝）都必须回传产生它的 `resultRequestSignature`。错误同样必须使用包含 `value`、`requestSignature` 和可选 `datasetKey` 的来源 envelope；Core 会彻底忽略不属于当前请求或数据集的错误。
 
 数据源只声明真实支持的能力。组件会同步限制筛选器和排序器，并在发出请求前再次校验，避免 UI 构造出后端无法执行的查询。
 
@@ -340,12 +354,14 @@ const instance = useGrid({ definition, source });
 `state` 可以只控制某些 slice。调用实例 API 时，组件发出期望状态，但受控值在父组件接受前保持不变。
 
 ```tsx
+const datasetKey = `${tenantId}:orders`;
 const [query, setQuery] = useState<GridQuery>(initialQuery);
 
 <DataGrid
   definition={definition}
   source={source}
   state={{ query }}
+  stateDatasetKey={datasetKey}
   onStateChange={(next, event) => {
     if (event.type.startsWith('query.')) setQuery(next.query);
   }}
@@ -354,7 +370,21 @@ const [query, setQuery] = useState<GridQuery>(initialQuery);
 
 可控制的 slice 为 `query`、`columns`、`selection`、`data`、`views`、`editing`、`actions`。通常只控制业务必须拥有的 slice，其余交给实例管理即可。
 
-跨租户、项目或其他数据边界复用实例时必须给 source 设置稳定的 `datasetKey`。边界变化时，Core 会取消旧工作并隔离仍未被父层替换的受控 data/selection/editing/actions；收到 `dataset.controlled.reset` 后应把清空后的 slice 写回业务状态。
+跨租户、项目或其他数据边界复用实例时必须给 source 设置稳定的 `datasetKey`。Controlled source 还要携带结果实际所属的 `resultDatasetKey`；通过 `state` 控制 `query`、`views`、`data`、`selection`、`editing` 或 `actions` 时，则要携带 `stateDatasetKey`。边界变化时，Core 默认清空业务查询、保存视图与实体状态，只保留列偏好和 page size；收到 `dataset.controlled.reset` 后应把新数据集的 slice 和 key 原子写回。
+
+确实可以跨数据集复用的查询域必须显式开放，不能靠旧对象偶然残留：
+
+```tsx
+<DataGrid
+  {...props}
+  datasetTransition={{
+    preserveQuery: ['context'],
+    preserveViews: true,
+  }}
+/>
+```
+
+`preserveViews` 只保留视图定义并解除当前 active view；分页始终回到第一页/初始 cursor。选择、编辑、动作和 rows 不会被隐式带入另一个数据集。
 
 ## Actions、选择与编辑
 

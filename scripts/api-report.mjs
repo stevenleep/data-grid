@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Extractor, ExtractorConfig } from '@microsoft/api-extractor';
@@ -25,6 +25,14 @@ for (const entrypoint of entrypoints) {
     throw new Error(
       `Public API ${localBuild ? 'report update' : 'compatibility check'} failed for ${entrypoint} (${result.errorCount} errors, ${result.warningCount} warnings).`,
     );
+  }
+
+  // API Extractor writes reports with CRLF on every platform. Keep committed
+  // artifacts deterministic and compatible with `git diff --check`.
+  if (localBuild) {
+    const reportPath = join(repositoryDirectory, 'etc', 'api', `${entrypoint}.api.md`);
+    const report = readFileSync(reportPath, 'utf8');
+    writeFileSync(reportPath, report.replace(/\r\n/g, '\n'));
   }
 }
 

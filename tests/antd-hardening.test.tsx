@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DataGrid,
+  DataGridView,
   GridActionButton,
+  GridActiveFilters,
   GridColumnPanel,
   GridFilterBuilder,
   GridPagination,
@@ -11,18 +13,23 @@ import {
   GridSortPanel,
   GridTable,
   createFilterGroup,
+  createFilterCondition,
+  createGrid,
   createLocalSource,
   createRemoteSource,
+  supportsGridDefaultEditor,
   type GridAction,
+  type GridCellEditorComponent,
+  type GridCellRendererComponent,
   type GridDefinition,
   type GridFilterGroup,
   type GridOption,
   type GridSelectionState,
   type GridSort,
+  useGridFieldOptions,
   useGridInstance,
   useGridSelector,
 } from '../src';
-import { useGridOptions } from '../src/antd/hooks';
 
 interface Row {
   id: number;
@@ -30,7 +37,13 @@ interface Row {
   website?: string;
   amount?: { amount: string; currency: string };
   picture?: { url: string; name: string };
-  owner?: { id: string; name: string };
+  attachment?: string;
+  owner?: {
+    id?: string;
+    name?: string;
+    customerCode?: string;
+    displayName?: string;
+  };
   tags?: string[];
   metadata?: unknown;
   country?: string;
@@ -51,7 +64,7 @@ function OptionsProbe() {
   const instance = useGridInstance<Row>();
   const [search, setSearch] = useState('');
   const [enabled, setEnabled] = useState(false);
-  const result = useGridOptions(instance.definition.fieldMap.get('name'), search, enabled);
+  const result = useGridFieldOptions(instance.definition.fieldMap.get('name'), search, enabled);
   return (
     <>
       <button
@@ -79,13 +92,13 @@ function OptionsProbe() {
 
 function StaticOptionsProbe() {
   const instance = useGridInstance<Row>();
-  const result = useGridOptions(instance.definition.fieldMap.get('name'), 'bet', true);
+  const result = useGridFieldOptions(instance.definition.fieldMap.get('name'), 'bet', true);
   return <output>{result.options.map((option) => String(option.label)).join(',')}</output>;
 }
 
 function DependentOptionsProbe() {
   const instance = useGridInstance<Row>();
-  const result = useGridOptions(instance.definition.fieldMap.get('name'), '', true);
+  const result = useGridFieldOptions(instance.definition.fieldMap.get('name'), '', true);
   return (
     <>
       <button
@@ -127,6 +140,21 @@ function SearchProbe({ onChange }: { onChange: (value: string) => void }) {
   );
 }
 
+function ReloadOptionsProbe() {
+  const instance = useGridInstance<Row>();
+  const result = useGridFieldOptions(instance.definition.fieldMap.get('name'));
+  return (
+    <>
+      <button type="button" onClick={result.reload}>
+        Reload options
+      </button>
+      <output aria-label="reloadable options">
+        {result.options.map((option) => String(option.label)).join(',')}
+      </output>
+    </>
+  );
+}
+
 function SelectionProbe() {
   const selection = useGridSelector<Row, GridSelectionState>((state) => state.selection);
   return (
@@ -135,6 +163,16 @@ function SelectionProbe() {
         ? `explicit:${selection.selectedKeys.join(',')}`
         : `allMatching:${selection.excludedKeys.join(',')}`}
     </output>
+  );
+}
+
+function ReadonlyRelationFilterProbe() {
+  const filters = useGridSelector<Row, GridFilterGroup>((state) => state.query.filters);
+  return (
+    <>
+      <GridActiveFilters<Row> fields={[]} />
+      <GridFilterBuilder<Row> value={filters} fields={[]} onChange={() => undefined} />
+    </>
   );
 }
 
@@ -615,6 +653,33 @@ describe('Ant Design adapter hardening', () => {
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument();
   });
 
+  it('exposes an explicit option reload that invalidates the shared option cache', async () => {
+    let attempt = 0;
+    const loader = vi.fn(async () => {
+      attempt += 1;
+      return [{ label: `Attempt ${attempt}`, value: attempt }];
+    });
+    render(
+      <DataGrid<Row>
+        definition={{
+          ...baseDefinition,
+          id: 'reloadable-field-options',
+          fields: [{ id: 'name', title: 'Name', options: loader }],
+        }}
+        source={createLocalSource([row])}
+        toolbar={false}
+        footer={false}
+      >
+        <ReloadOptionsProbe />
+      </DataGrid>,
+    );
+
+    expect(await screen.findByText('Attempt 1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload options' }));
+    expect(await screen.findByText('Attempt 2')).toBeInTheDocument();
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
   it('reloads dependent options when a nested filter group changes logic', async () => {
     const loader = vi.fn(async () => [{ label: 'Dependent option', value: 'dependent' }]);
     const filters: GridFilterGroup = {
@@ -839,6 +904,210 @@ describe('Ant Design adapter hardening', () => {
     expect(save.mock.calls[0]?.[0].value).toEqual({ amount: '12.5', currency: 'USD' });
   });
 
+  it('does not advertise fake default image or file editors', async () => {
+    const save = vi.fn(async ({ row: current }) => current);
+    render(
+      <DataGrid<Row>
+        definition={{
+          ...baseDefinition,
+          id: 'media-custom-editor-required',
+          fields: [
+            { id: 'picture', title: 'Picture', valueType: 'image', edit: true },
+            { id: 'attachment', title: 'Attachment', valueType: 'file', edit: true },
+          ],
+          editing: { save },
+        }}
+        source={createLocalSource([
+          {
+            ...row,
+            picture: { url: 'https://example.com/ada.png', name: 'Ada portrait' },
+            attachment: 'report.pdf',
+          },
+        ])}
+        toolbar={false}
+        footer={false}
+      />,
+    );
+
+    expect(await screen.findByRole('img', { name: 'Ada portrait' })).toBeInTheDocument();
+    expect(screen.getByText(/report\.pdf/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '编辑 Picture' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '编辑 Attachment' })).not.toBeInTheDocument();
+    expect(supportsGridDefaultEditor('image')).toBe(false);
+    expect(supportsGridDefaultEditor('file')).toBe(false);
+    expect(supportsGridDefaultEditor('text')).toBe(true);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('accepts hook-friendly AntD renderer and editor components by value type', async () => {
+    const AttachmentCell: GridCellRendererComponent<Row> = ({ value }) => (
+      <span>asset:{String(value)}</span>
+    );
+    const AttachmentEditor: GridCellEditorComponent<Row> = ({ draft, setDraft, commit }) => {
+      const [prefix] = useState('custom');
+      return (
+        <input
+          aria-label={`${prefix} attachment editor`}
+          value={String(draft ?? '')}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => void commit()}
+        />
+      );
+    };
+    const save = vi.fn(async ({ row: current, value }) => ({
+      ...current,
+      attachment: String(value),
+    }));
+    render(
+      <DataGrid<Row>
+        definition={{
+          ...baseDefinition,
+          id: 'registered-field-components',
+          fields: [{ id: 'attachment', title: 'Attachment', valueType: 'file', edit: true }],
+          editing: { save },
+        }}
+        source={createLocalSource([{ ...row, attachment: 'before.txt' }])}
+        cellRenderers={{ file: AttachmentCell }}
+        cellEditors={{ file: AttachmentEditor }}
+        toolbar={false}
+        footer={false}
+      />,
+    );
+
+    fireEvent.doubleClick(await screen.findByRole('button', { name: '编辑 Attachment' }));
+    const input = screen.getByRole('textbox', { name: 'custom attachment editor' });
+    fireEvent.change(input, { target: { value: 'after.txt' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]?.[0].value).toBe('after.txt');
+    expect(await screen.findByText('asset:after.txt')).toBeInTheDocument();
+  });
+
+  it('does not execute a field editor callback before its cell becomes active', async () => {
+    const editor = vi.fn(({ draft }) => (
+      <input aria-label="field editor" value={String(draft)} readOnly />
+    ));
+    render(
+      <DataGrid<Row>
+        definition={{
+          ...baseDefinition,
+          id: 'lazy-field-editor',
+          fields: [
+            {
+              id: 'name',
+              title: 'Name',
+              edit: true,
+              editor,
+            },
+          ],
+          editing: { save: async () => undefined },
+        }}
+        source={createLocalSource([row])}
+        toolbar={false}
+        footer={false}
+      />,
+    );
+
+    const trigger = await screen.findByRole('button', { name: '编辑 Name' });
+    expect(editor).not.toHaveBeenCalled();
+    fireEvent.doubleClick(trigger);
+    expect(await screen.findByRole('textbox', { name: 'field editor' })).toBeInTheDocument();
+    expect(editor).toHaveBeenCalled();
+  });
+
+  it('uses relation key and label metadata across display, filtering identity and editing', async () => {
+    const owners = {
+      C7: { customerCode: 'C7', displayName: 'Ada CRM' },
+      C8: { customerCode: 'C8', displayName: 'Grace CRM' },
+    };
+    const save = vi.fn(async ({ row: current, value }) => ({ ...current, owner: value }));
+    render(
+      <DataGrid<Row>
+        definition={{
+          ...baseDefinition,
+          id: 'relation-field-metadata',
+          fields: [
+            {
+              id: 'owner',
+              title: 'Owner',
+              relation: {
+                target: 'crm.customer',
+                cardinality: 'one',
+                keyField: 'customerCode',
+                labelField: 'displayName',
+              },
+              edit: true,
+              options: [
+                { label: 'Customer Seven', value: 'C7' },
+                { label: 'Customer Eight', value: 'C8' },
+              ],
+              normalize: (value) =>
+                typeof value === 'string' ? owners[value as keyof typeof owners] : value,
+            },
+          ],
+          editing: { save },
+        }}
+        source={createLocalSource([{ ...row, owner: owners.C7 }])}
+        toolbar={false}
+        footer={false}
+      />,
+    );
+
+    expect(await screen.findByText('Ada CRM')).toBeInTheDocument();
+    fireEvent.doubleClick(screen.getByRole('button', { name: '编辑 Owner' }));
+    fireEvent.click(await screen.findByText('Customer Eight'));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls[0]?.[0].value).toEqual(owners.C8);
+    expect(await screen.findByText('Grace CRM')).toBeInTheDocument();
+  });
+
+  it('uses relation metadata in active and readonly filter labels', async () => {
+    const owner = { customerCode: 'C7', displayName: 'Ada CRM' };
+    const filters = createFilterGroup('and', [
+      createFilterCondition('owner', 'in', [
+        {
+          customerCode: 'C7',
+          displayName: 'Ada CRM',
+        },
+      ]),
+    ]);
+    const rendered = render(
+      <DataGrid<Row>
+        definition={{
+          ...baseDefinition,
+          id: 'relation-filter-labels',
+          fields: [
+            {
+              id: 'owner',
+              title: 'Owner',
+              filter: true,
+              relation: {
+                target: 'crm.customer',
+                cardinality: 'one',
+                keyField: 'customerCode',
+                labelField: 'displayName',
+              },
+              options: [{ label: 'Customer Seven', value: 'C7' }],
+            },
+          ],
+        }}
+        source={createLocalSource([{ ...row, owner }])}
+        defaultState={{ query: { filters } }}
+        toolbar={false}
+        footer={false}
+      >
+        <ReadonlyRelationFilterProbe />
+      </DataGrid>,
+    );
+
+    const activeFilters = rendered.container.querySelector('.hui-grid__active-filters');
+    const readonlyValue = rendered.container.querySelector('.hui-grid__filter-readonly-value');
+    expect(activeFilters).toHaveTextContent('Ada CRM');
+    expect(readonlyValue).toHaveTextContent('Ada CRM');
+    expect(activeFilters).not.toHaveTextContent('[object Object]');
+    expect(readonlyValue).not.toHaveTextContent('[object Object]');
+  });
+
   it('adapts relation option identities without discarding existing domain objects', async () => {
     const owners = {
       'user-1': { id: 'user-1', name: 'Domain user one' },
@@ -1016,6 +1285,41 @@ describe('Ant Design adapter hardening', () => {
         'website:asc,name:asc',
       ),
     );
+  });
+
+  it('rebuilds table sorters when an external instance changes sort capabilities', async () => {
+    const gridDefinition: GridDefinition<Row> = {
+      ...baseDefinition,
+      id: 'external-runtime-sort-capability',
+      fields: [
+        { id: 'name', title: 'Name', sort: true },
+        { id: 'website', title: 'Website', sort: true },
+      ],
+    };
+    const source = (max: number) =>
+      createRemoteSource<Row>(async () => ({ rows: [{ ...row, website: 'site' }] }), {
+        capabilities: { sort: { max } },
+      });
+    const grid = createGrid<Row>({ definition: gridDefinition, source: source(1) });
+    const sorterCount = () => document.querySelectorAll('.ant-table-column-sorters').length;
+
+    render(<DataGridView<Row> grid={grid} toolbar={false} footer={false} />);
+    expect(sorterCount()).toBeGreaterThan(0);
+
+    act(() => grid.updateOptions({ definition: gridDefinition, source: source(0) }));
+    expect(sorterCount()).toBe(0);
+
+    act(() => grid.updateOptions({ definition: gridDefinition, source: source(1) }));
+    expect(sorterCount()).toBeGreaterThan(0);
+
+    act(() => grid.updateOptions({ definition: gridDefinition, source: source(2) }));
+    fireEvent.click(screen.getAllByText('Name')[0]!.closest('.ant-table-column-sorters')!);
+    fireEvent.click(screen.getAllByText('Website')[0]!.closest('.ant-table-column-sorters')!);
+    await waitFor(() =>
+      expect(grid.getState().query.sorts.map((sort) => sort.fieldId)).toEqual(['name', 'website']),
+    );
+
+    grid.destroy();
   });
 
   it('isolates a failing custom cell renderer and exposes complete resize semantics', async () => {
